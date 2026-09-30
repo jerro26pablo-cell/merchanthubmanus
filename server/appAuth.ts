@@ -144,7 +144,7 @@ export function registerAppAuthRoutes(app: Express) {
       ] as const;
       for (const [listingId, title, listingType, priceCents, category] of seed) await db.execute(sql.raw(`INSERT INTO listings_owned (listingId, ownerId, title, description, category, listingType, priceCents, stock, condition, imageData, auctionEndAt, reserveThresholdCents, minimumIncrementCents, lifecycle) VALUES ('${listingId}', ${demo.id}, '${title}', 'Demo listing for the MerchantHub marketplace.', '${category}', '${listingType}', ${priceCents}, 1, 'Like new', NULL, ${listingType === "Buy now" ? "NULL" : "DATE_ADD(NOW(), INTERVAL 7 DAY)"}, ${listingType === "Buy now" ? "NULL" : Math.round(priceCents * 0.8)}, ${listingType === "Buy now" ? "NULL" : 1000}, 'official')`));
       return res.json({ ok: true, message: "Demo marketplace reset complete.", preservedAccounts: [ADMIN_EMAIL, RIDER_EMAIL] });
-    } catch (error) { console.error("[Admin] Demo reset failed", error); return res.status(500).json({ ok: false, error: "Demo reset failed. Check Render logs." }); }
+    } catch (error) { console.error("[Admin] Demo reset failed", error); return res.status(500).json({ ok: false, error: `Demo reset failed: ${error instanceof Error ? error.message : String(error)}` }); }
   });
 }
 

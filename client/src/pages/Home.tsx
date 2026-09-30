@@ -493,7 +493,7 @@ function ItemDetail({ listingId, customListings, authUser, onVisitStore, onMessa
   const [selectedPhoto, setSelectedPhoto] = useState(0);
   const [compareOpen, setCompareOpen] = useState(false);
   const gallery = listing.photos?.length ? listing.photos : [listing.image];
-  const similar = [...customListings, ...listings].filter((item) => item.id !== listing.id && item.category === listing.category).slice(0, 1)[0] ?? [...customListings, ...listings].find((item) => item.id !== listing.id);
+  const similar = [...customListings, ...listings].find((item) => item.id !== listing.id && item.category === listing.category);
   useEffect(() => { if (!navigator.geolocation) return; navigator.geolocation.getCurrentPosition((current) => setBuyerPosition([current.coords.latitude, current.coords.longitude]), () => undefined, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }); }, []);
   const isAuction = listing.type === "Auction" || listing.type === "Both";
   const canBuyNow = listing.type === "Buy now" || listing.type === "Both";

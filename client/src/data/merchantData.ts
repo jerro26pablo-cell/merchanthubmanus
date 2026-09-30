@@ -77,6 +77,7 @@ export const listings: Listing[] = [
     price: 8200,
     currentBid: 8450,
     startingBid: 6500,
+    auctionEndAt: "2026-10-01T12:00:00+08:00",
     bidders: 18,
     timeLeft: "01h 42m",
     image: "https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=900&q=85",

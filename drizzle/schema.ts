@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -18,6 +18,9 @@ export const users = mysqlTable("users", {
   passwordHash: varchar("passwordHash", { length: 255 }),
   province: varchar("province", { length: 120 }),
   municipality: varchar("municipality", { length: 120 }),
+  storeName: varchar("storeName", { length: 160 }),
+  storeImage: longtext("storeImage"),
+  sellerEnabled: int("sellerEnabled").default(0).notNull(),
   walletCents: int("walletCents").default(0).notNull(),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin", "rider"]).default("user").notNull(),
@@ -54,7 +57,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   priceCents: int("priceCents").notNull(),
   stock: int("stock").notNull().default(1),
   condition: mysqlEnum("condition", ["New", "Like new", "Good"]).notNull(),
-  imageData: text("imageData"),
+  imageData: longtext("imageData"),
   auctionEndAt: timestamp("auctionEndAt"),
   reserveThresholdCents: int("reserveThresholdCents"),
   minimumIncrementCents: int("minimumIncrementCents"),

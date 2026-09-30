@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "./db";
-import { proxyBids, users } from "../drizzle/schema";
+import { listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
 import { settleExpiredAuctions } from "./notifications";
 
@@ -20,6 +20,8 @@ export function registerBiddingRoutes(app: Express) {
     if (!listingId || !Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100) return res.status(400).json({ ok: false, error: "Listing, max bid, and a minimum increment of at least ₱1 are required." });
     if (maxBidCents > user.walletCents) return res.status(400).json({ ok: false, error: `Your max bid cannot exceed your e-wallet balance of ${pesos(user.walletCents)}.` });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const listing = (await db.select({ auctionEndAt: listingsOwned.auctionEndAt }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    if (listing?.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
     const active = await activeForListing(db, listingId); const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); const requiredBid = currentBidCents + incrementCents;
     if (maxBidCents < requiredBid) return res.status(409).json({ ok: false, error: `This auction moved to ${pesos(currentBidCents)}. Your max bid must be at least ${pesos(requiredBid)}.`, currentBidCents, requiredBid });
     await db.update(proxyBids).set({ status: "outbid" }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "active")));

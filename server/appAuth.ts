@@ -11,7 +11,7 @@ const ADMIN_EMAIL = "admin@gmail.com";
 const ADMIN_PASSWORD = "admin123";
 const RIDER_EMAIL = "rider@gmail.com";
 const RIDER_PASSWORD = "rider123";
-type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number };
+type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; sellerEnabled: boolean };
 
 const hashPassword = (password: string) => new Promise<string>((resolve, reject) => {
   crypto.scrypt(password, SESSION_SECRET, 64, (error, derived) => {
@@ -44,7 +44,7 @@ const verifySession = (token: string | undefined) => {
   } catch { return undefined; }
 };
 
-const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents });
+const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: Boolean(user.sellerEnabled) });
 
 export async function getAppUser(req: Request): Promise<SessionUser | undefined> {
   const db = await getDb();
@@ -118,6 +118,15 @@ export function registerAppAuthRoutes(app: Express) {
   });
 
   app.post("/api/auth/logout", (req, res) => { clearSessionCookie(req, res); return res.json({ ok: true }); });
+  app.patch("/api/auth/seller-profile", async (req, res) => {
+    const user = await getAppUser(req); if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
+    const storeName = String(req.body?.storeName ?? "").trim(); const storeImage = req.body?.storeImage ? String(req.body.storeImage) : null;
+    if (!storeName) return res.status(400).json({ ok: false, error: "Store name is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await db.update(users).set({ storeName, storeImage, sellerEnabled: 1 }).where(eq(users.id, user.id));
+    const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0];
+    return res.json({ ok: true, user: row ? publicUser(row) : user });
+  });
 }
 
 export { ADMIN_EMAIL };

@@ -20,6 +20,7 @@ function Router() {
       <Route path="/inventory" component={Home} />
       <Route path="/messages" component={Home} />
       <Route path="/saved" component={Home} />
+      <Route path="/bidding" component={Home} />
       <Route path="/wallet" component={Home} />
       <Route path="/admin-dashboard" component={Home} />
       <Route path="/admin" component={Home} />

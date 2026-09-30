@@ -58,8 +58,9 @@ This option is possible but is not a settings-only change. The current `server/_
    pnpm db:migrate
    ```
 
-9. Configure the Stripe webhook endpoint as `https://<your-render-host>/api/stripe/webhook`.
-10. Test registration, login, listings, checkout, webhook processing, and storage before sharing the URL.
+9. The Docker startup command runs `pnpm db:migrate` before starting the app, which initializes the schema on the free Render plan.
+10. Configure the Stripe webhook endpoint as `https://<your-render-host>/api/stripe/webhook`.
+11. Test registration, login, listings, checkout, webhook processing, and storage before sharing the URL.
 
 The Blueprint generates secure values for `MANUS_JWT_SECRET` and `SESSION_SECRET`. It intentionally prompts for database, storage, Manus, and Stripe values instead of committing them to GitHub.
 

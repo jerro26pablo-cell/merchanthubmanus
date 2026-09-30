@@ -6,7 +6,6 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    preDeployCommand: pnpm db:migrate
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

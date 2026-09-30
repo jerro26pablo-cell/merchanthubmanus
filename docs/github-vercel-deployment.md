@@ -1,4 +1,4 @@
-# MerchantHub: GitHub and Vercel Deployment Outline
+# MerchantHub: GitHub and Render Deployment Outline
 
 ## Current project assessment
 
@@ -13,21 +13,23 @@ MerchantHub is currently a **full-stack Node application**:
 - Current production entrypoint: `dist/index.js`
 - Current container entrypoint: `node dist/index.js`
 
-The existing `Dockerfile` is suitable for a container host, but **Vercel does not run this Dockerfile as a long-lived Express server**. The current application therefore needs either a backend split or a different backend host before a complete Vercel deployment.
+The existing `Dockerfile` is suitable for Render. **Render is the recommended deployment target for the current application** because it can build and run the existing long-lived Express server without converting the backend to serverless functions.
 
 ## Recommended production architecture
 
-### Option A — recommended first deployment
+### Recommended deployment: Render
 
-- Deploy the Vite frontend to Vercel.
-- Deploy the existing Express/tRPC backend and Dockerfile to a container platform such as Railway, Render, Fly.io, or another Node container host.
-- Point the frontend API base URL to the backend origin, or place both behind a reverse proxy/custom domain.
+- Deploy the complete Dockerized application to Render using the committed `render.yaml` Blueprint.
 - Keep MySQL on a managed provider.
 - Configure Stripe webhook delivery to the backend URL.
 
 This is the lowest-risk route because it preserves the current Express route registration, raw Stripe webhook handling, cookies, uploads, and long-running server behavior.
 
-### Option B — all-Vercel deployment
+### Optional later architecture: Vercel frontend
+
+The Vite frontend can be separated and hosted on Vercel later, with the Render service remaining the API/backend. This requires configuring the frontend API origin and carefully testing cross-origin cookies.
+
+### Not recommended now: all-Vercel deployment
 
 Convert the backend to Vercel Functions before production:
 
@@ -40,6 +42,26 @@ Convert the backend to Vercel Functions before production:
 7. Test authentication cookies, file uploads, webhook retries, and all API routes in a preview deployment.
 
 This option is possible but is not a settings-only change. The current `server/_core/index.ts` calls `server.listen()` and creates an HTTP server, which is not the deployment contract for Vercel Functions.
+
+## Render deployment steps
+
+1. Open the Render dashboard and choose **New → Blueprint**.
+2. Connect the public GitHub repository `jerro26pablo-cell/merchanthubmanus`.
+3. Select the `main` branch. Render detects the committed `render.yaml`.
+4. Review the `merchanthub` web service and keep the Docker runtime.
+5. Enter the `DATABASE_URL`, Manus, and Stripe values prompted by Render.
+6. Apply the Blueprint and wait for the Docker build to finish.
+7. Open the generated `onrender.com` URL and verify `/api/health` returns `{"status":"ok"}`.
+8. Run the Drizzle migrations against the production MySQL database:
+
+   ```bash
+   pnpm db:migrate
+   ```
+
+9. Configure the Stripe webhook endpoint as `https://<your-render-host>/api/stripe/webhook`.
+10. Test registration, login, listings, checkout, webhook processing, and storage before sharing the URL.
+
+The Blueprint generates secure values for `MANUS_JWT_SECRET` and `SESSION_SECRET`. It intentionally prompts for database, storage, Manus, and Stripe values instead of committing them to GitHub.
 
 ## GitHub repository preparation
 
@@ -58,6 +80,7 @@ This option is possible but is not a settings-only change. The current `server/_
 - `.gitignore`
 - `.env.example`
 - `docs/github-vercel-deployment.md`
+- `render.yaml`
 
 ### Files and values not to commit
 
@@ -103,7 +126,7 @@ The application currently references these runtime variables:
 | `NODE_ENV` | Runtime mode | Set to `production` in production |
 | `PORT` | Container listener port | Container deployment only; host supplies it when applicable |
 
-Use the included `.env.example` as the variable-name checklist. Put real values in Vercel/backend-host environment settings, not GitHub.
+Use the included `.env.example` as the variable-name checklist. Put real values in Render environment settings, not GitHub.
 
 ## Local verification before the first push
 
@@ -142,7 +165,7 @@ Recommended branches:
 - `feature/*`: individual changes and pull requests
 - Optional `develop`: integration branch if multiple contributors are involved
 
-## Vercel sequence for Option A
+## Optional Vercel frontend sequence
 
 1. Import the repository into Vercel.
 2. Set the project root to the frontend location if the frontend is deployed separately; otherwise use a dedicated frontend branch or workspace.
@@ -157,9 +180,9 @@ Recommended branches:
 
 The static Vite build alone is not a complete MerchantHub deployment because the application depends on `/api/*` routes and the database.
 
-## Vercel acceptance checklist
+## Render acceptance checklist
 
-- Homepage loads from the Vercel URL.
+- Homepage loads from the Render URL.
 - Client-side routes work after a direct refresh.
 - Frontend requests reach the backend without CORS or cookie errors.
 - `GET /api/health` returns a successful response from the backend.
@@ -169,14 +192,14 @@ The static Vite build alone is not a complete MerchantHub deployment because the
 - Stripe webhook signature verification succeeds at the public HTTPS endpoint.
 - Storage upload and download paths work.
 - No secrets or demo passwords appear in the repository or browser bundle.
-- Preview and production environment variables are configured separately.
+- Render environment variables are configured separately from GitHub.
 
 ## Suggested GitHub issues
 
 1. **Repository hardening** — remove demo credentials, add `.env.example`, exclude debug logs.
 2. **Production configuration** — define database, session, storage, and Stripe environment variables.
-3. **Backend deployment** — deploy the current Dockerfile to a container host and verify `/api/health`.
-4. **Frontend Vercel deployment** — publish the Vite build and configure API origin/SPA fallback.
+3. **Render deployment** — deploy the current Dockerfile using `render.yaml` and verify `/api/health`.
+4. **Optional Vercel frontend deployment** — publish the Vite build and configure API origin/SPA fallback.
 5. **Database migration** — apply checked-in Drizzle migrations to managed MySQL.
 6. **Stripe verification** — configure webhook endpoint and test success/failure/retry flows.
 7. **Production security review** — review authentication, CORS/cookies, uploads, rate limits, and secrets.

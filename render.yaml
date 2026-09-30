@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: merchanthub
+    runtime: docker
+    plan: free
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: MANUS_JWT_SECRET
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: MANUS_PROJECT_ID
+        sync: false
+      - key: OWNER_OPEN_ID
+        sync: false
+      - key: MANUS_OAUTH_API_URL
+        sync: false
+      - key: MANUS_API_URL
+        sync: false
+      - key: MANUS_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false

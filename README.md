@@ -2,7 +2,7 @@
 
 React / Express / tRPC / Drizzle starter, adapted from the Sandbox web-db-user template.
 
-See [docs/github-vercel-deployment.md](docs/github-vercel-deployment.md) for the GitHub preparation checklist, Vercel architecture options, environment variables, and production security notes.
+See [docs/github-vercel-deployment.md](docs/github-vercel-deployment.md) for the GitHub preparation checklist, Render deployment steps, environment variables, and production security notes. The repository includes a Render Blueprint in [`render.yaml`](render.yaml).
 
 - `pnpm dev`: development server; honors `PORT` (default 3000).
 - `pnpm build` / `pnpm start`: build and serve `dist/index.js` and `dist/public/`.

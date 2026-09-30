@@ -1,8 +1,8 @@
 import type { Express, Request, Response } from "express";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { listingsOwned, users } from "../drizzle/schema";
+import { commerceOrders, listingsOwned, users } from "../drizzle/schema";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -15,12 +15,26 @@ const toListing = (row: typeof listingsOwned.$inferSelect, seller = "") => {
   return { id: row.listingId, title: row.title, description: row.description, category: row.category, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" || row.listingType === "Both" ? row.priceCents / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, lifecycle: row.lifecycle, ownerId: row.ownerId };
 };
 export const registerListingRoutes = (app: Express) => {
+  app.get("/api/metrics/overview", async (req, res) => {
+    const user = await getAppUser(req);
+    if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const ownerFilter = user.role === "admin" ? undefined : user.id;
+    const listingRows = await db.select({ id: listingsOwned.listingId, stock: listingsOwned.stock, type: listingsOwned.listingType, end: listingsOwned.auctionEndAt }).from(listingsOwned).where(ownerFilter ? and(eq(listingsOwned.ownerId, ownerFilter), eq(listingsOwned.lifecycle, "official")) : eq(listingsOwned.lifecycle, "official"));
+    const orderRows = user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
+    const liveAuctions = listingRows.filter((row) => (row.type === "Auction" || row.type === "Both") && (!row.end || row.end.getTime() > Date.now())).length;
+    const transitStatuses = new Set(["Processing", "Rider assigned", "Picked up", "In transit"]);
+    const inTransit = orderRows.filter((row) => transitStatuses.has(row.status)).length;
+    const grossSalesCents = orderRows.filter((row) => row.status !== "Cancelled").reduce((sum, row) => sum + row.amountCents, 0);
+    return res.json({ ok: true, metrics: { grossSalesCents, liveAuctions, ordersInTransit: inTransit, availableStock: listingRows.reduce((sum, row) => sum + row.stock, 0), skuCount: listingRows.length } });
+  });
   app.get("/api/listings", async (req, res) => {
     const user = await getAppUser(req);
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const ownerOnly = req.query.owner === "me";
-    const ownerRows = ownerOnly && user ? await db.select().from(listingsOwned).where(and(eq(listingsOwned.ownerId, user.id), ne(listingsOwned.lifecycle, "deleted"))) : await db.select().from(listingsOwned).where(eq(listingsOwned.lifecycle, "official"));
+    const ownerRows = ownerOnly && user ? await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id)) : await db.select().from(listingsOwned).where(eq(listingsOwned.lifecycle, "official"));
     const rows = ownerOnly ? ownerRows : ownerRows.filter((row) => !(row.listingType === "Auction" || row.listingType === "Both") || !row.auctionEndAt || row.auctionEndAt.getTime() > Date.now());
     const owners = await db.select({ id: users.id, name: users.name, storeName: users.storeName }).from(users);
     const ownerMap = new Map(owners.map((owner) => [owner.id, owner.storeName || owner.name || "MerchantHub seller"]));
@@ -63,6 +77,21 @@ export const registerListingRoutes = (app: Express) => {
     await db.update(listingsOwned).set(updates).where(eq(listingsOwned.listingId, req.params.listingId));
     const updated = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, req.params.listingId)).limit(1))[0];
     return res.json({ ok: true, listing: updated ? toListing(updated) : null });
+  });
+  app.post("/api/listings/:listingId/split-auction", async (req, res) => {
+    const user = await requireUser(req, res); if (!user) return;
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const source = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
+    if (!source || source.lifecycle === "deleted") return res.status(404).json({ ok: false, error: "Listing not found." });
+    const auctionQuantity = Math.round(Number(req.body?.quantity));
+    if (!Number.isFinite(auctionQuantity) || auctionQuantity < 1 || auctionQuantity >= source.stock) return res.status(400).json({ ok: false, error: `Auction quantity must be between 1 and ${Math.max(1, source.stock - 1)}.` });
+    const end = new Date(String(req.body?.auctionEndAt ?? "")); const reserve = Math.round(Number(req.body?.reserveThresholdCents)); const increment = Math.round(Number(req.body?.minimumIncrementCents));
+    if (Number.isNaN(end.getTime()) || !Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(increment) || increment < 100) return res.status(400).json({ ok: false, error: "Auction end, reserve, and minimum ₱1 increment are required." });
+    const listingId = `${source.listingId}-auction-${Date.now()}`;
+    await db.update(listingsOwned).set({ stock: source.stock - auctionQuantity }).where(eq(listingsOwned.listingId, source.listingId));
+    await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title: source.title, description: source.description, category: source.category, listingType: "Auction", priceCents: source.priceCents, stock: auctionQuantity, condition: source.condition, imageData: source.imageData, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle: "official" });
+    const created = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name) : null });
   });
   app.delete("/api/listings/:listingId", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;

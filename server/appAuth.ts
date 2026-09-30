@@ -137,13 +137,7 @@ export function registerAppAuthRoutes(app: Express) {
       const demo = (await db.select().from(users).where(eq(users.email, ADMIN_EMAIL)).limit(1))[0];
       if (!demo) return res.status(500).json({ ok: false, error: "Admin account could not be loaded." });
       await db.update(users).set({ storeName: "MerchantHub Operations Store", sellerEnabled: 1 }).where(eq(users.id, demo.id));
-      const seed = [
-        ["demo-buy-now", "Demo Buy Now Camera", "Buy now", 125000, "Cameras"],
-        ["demo-auction-headphones", "Demo Auction Headphones", "Auction", 650000, "Audio"],
-        ["demo-both-record-player", "Demo Auction + Buy Now Record Player", "Both", 280000, "Collectibles"],
-      ] as const;
-      for (const [listingId, title, listingType, priceCents, category] of seed) await db.execute(sql.raw(`INSERT INTO listings_owned (listingId, ownerId, title, description, category, listingType, priceCents, stock, \`condition\`, imageData, auctionEndAt, reserveThresholdCents, minimumIncrementCents, lifecycle) VALUES ('${listingId}', ${demo.id}, '${title}', 'Demo listing for the MerchantHub marketplace.', '${category}', '${listingType}', ${priceCents}, 1, 'Like new', NULL, ${listingType === "Buy now" ? "NULL" : "DATE_ADD(NOW(), INTERVAL 7 DAY)"}, ${listingType === "Buy now" ? "NULL" : Math.round(priceCents * 0.8)}, ${listingType === "Buy now" ? "NULL" : 1000}, 'official')`));
-      return res.json({ ok: true, message: "Demo marketplace reset complete.", preservedAccounts: [ADMIN_EMAIL, RIDER_EMAIL] });
+      return res.json({ ok: true, message: "Fresh marketplace reset complete.", preservedAccounts: [ADMIN_EMAIL, RIDER_EMAIL], listings: 0 });
     } catch (error) { console.error("[Admin] Demo reset failed", error); const detail = (error as any)?.cause?.message || (error as any)?.sqlMessage || (error instanceof Error ? error.message : String(error)); return res.status(500).json({ ok: false, error: `Demo reset failed: ${detail}` }); }
   });
 }

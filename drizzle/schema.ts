@@ -80,6 +80,8 @@ export const commerceOrders = mysqlTable("commerce_orders", {
   province: varchar("province", { length: 120 }).notNull(),
   municipality: varchar("municipality", { length: 120 }).notNull(),
   addressDetails: varchar("addressDetails", { length: 240 }),
+  destinationLatitude: varchar("destinationLatitude", { length: 32 }),
+  destinationLongitude: varchar("destinationLongitude", { length: 32 }),
   status: mysqlEnum("status", ["Processing", "Rider assigned", "Picked up", "In transit", "Delivered", "Cancelled"]).default("Processing").notNull(),
   riderId: int("riderId"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),

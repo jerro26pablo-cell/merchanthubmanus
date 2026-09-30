@@ -144,5 +144,22 @@ export const notifications = mysqlTable("notifications", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const messages = mysqlTable("messages", {
+  id: int("id").autoincrement().primaryKey(),
+  listingId: varchar("listingId", { length: 128 }),
+  senderId: int("senderId").notNull(),
+  recipientId: int("recipientId").notNull(),
+  body: text("body").notNull(),
+  readAt: timestamp("readAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const wishlists = mysqlTable("wishlists", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type PaymentOrder = typeof paymentOrders.$inferSelect;
 export type ShippingLabel = typeof shippingLabels.$inferSelect;

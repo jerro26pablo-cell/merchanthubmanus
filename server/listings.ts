@@ -26,7 +26,7 @@ export const registerListingRoutes = (app: Express) => {
     const liveAuctions = listingRows.filter((row) => (row.type === "Auction" || row.type === "Both") && (!row.end || row.end.getTime() > Date.now())).length;
     const transitStatuses = new Set(["Processing", "Rider assigned", "Picked up", "In transit"]);
     const inTransit = orderRows.filter((row) => transitStatuses.has(row.status)).length;
-    const grossSalesCents = orderRows.filter((row) => row.status !== "Cancelled").reduce((sum, row) => sum + row.amountCents, 0);
+    const grossSalesCents = orderRows.filter((row) => row.status !== "Cancelled" && (user.role === "admin" || row.sellerId === user.id)).reduce((sum, row) => sum + row.amountCents, 0);
     return res.json({ ok: true, metrics: { grossSalesCents, liveAuctions, ordersInTransit: inTransit, availableStock: listingRows.reduce((sum, row) => sum + row.stock, 0), skuCount: listingRows.length } });
   });
   app.get("/api/listings", async (req, res) => {

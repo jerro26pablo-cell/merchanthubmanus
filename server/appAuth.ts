@@ -128,11 +128,24 @@ export function registerAppAuthRoutes(app: Express) {
     const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0];
     return res.json({ ok: true, user: row ? publicUser(row) : user });
   });
+  app.patch("/api/auth/profile", async (req, res) => {
+    const user = await getAppUser(req); if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
+    const updates: Partial<typeof users.$inferInsert> = {};
+    if (req.body?.name !== undefined && String(req.body.name).trim()) updates.name = String(req.body.name).trim().slice(0, 160);
+    if (req.body?.email !== undefined && String(req.body.email).trim()) updates.email = String(req.body.email).trim().toLowerCase();
+    if (req.body?.province !== undefined) updates.province = String(req.body.province).trim();
+    if (req.body?.municipality !== undefined) updates.municipality = String(req.body.municipality).trim();
+    if (req.body?.storeImage !== undefined) updates.storeImage = req.body.storeImage ? String(req.body.storeImage) : null;
+    if (!Object.keys(updates).length) return res.status(400).json({ ok: false, error: "Add at least one profile change." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await db.update(users).set(updates).where(eq(users.id, user.id));
+    const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0]; return res.json({ ok: true, user: row ? publicUser(row) : user });
+  });
   app.post("/api/admin/reset-demo", async (req, res) => {
     const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     try {
-      await db.execute(sql.raw("DELETE FROM proxy_bids")); await db.execute(sql.raw("DELETE FROM commerce_orders")); await db.execute(sql.raw("DELETE FROM payment_orders")); await db.execute(sql.raw("DELETE FROM stripe_events")); await db.execute(sql.raw("DELETE FROM shipping_labels")); await db.execute(sql.raw("DELETE FROM notifications")); await db.execute(sql.raw("DELETE FROM rider_locations")); await db.execute(sql.raw("DELETE FROM listings_owned"));
+      await db.execute(sql.raw("DELETE FROM proxy_bids")); await db.execute(sql.raw("DELETE FROM commerce_orders")); await db.execute(sql.raw("DELETE FROM payment_orders")); await db.execute(sql.raw("DELETE FROM stripe_events")); await db.execute(sql.raw("DELETE FROM shipping_labels")); await db.execute(sql.raw("DELETE FROM notifications")); await db.execute(sql.raw("DELETE FROM messages")); await db.execute(sql.raw("DELETE FROM wishlists")); await db.execute(sql.raw("DELETE FROM rider_locations")); await db.execute(sql.raw("DELETE FROM listings_owned"));
       await db.execute(sql.raw("DELETE FROM users WHERE role NOT IN ('admin','rider')"));
       const demo = (await db.select().from(users).where(eq(users.email, ADMIN_EMAIL)).limit(1))[0];
       if (!demo) return res.status(500).json({ ok: false, error: "Admin account could not be loaded." });

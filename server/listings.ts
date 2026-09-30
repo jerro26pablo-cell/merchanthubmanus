@@ -32,7 +32,7 @@ export const registerListingRoutes = (app: Express) => {
     if (auction && (!end || Number.isNaN(end.getTime()) || reserve == null || !Number.isFinite(reserve) || reserve < 0 || increment == null || !Number.isFinite(increment) || increment < 100)) return res.status(400).json({ ok: false, error: "Choose an auction end time, reserve threshold, and increment of at least ₱1." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const listingId = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}-${Date.now()}`;
-    await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), listingType, priceCents, stock, condition: body.condition ?? "New", imageData: body.imageData ? String(body.imageData) : null, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle: "draft" });
+    await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), listingType, priceCents, stock, condition: body.condition ?? "New", imageData: body.imageData ? String(body.imageData) : null, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle: "official" });
     const row = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     return res.status(201).json({ ok: true, listing: row ? toListing(row) : null });
   });

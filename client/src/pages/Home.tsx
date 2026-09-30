@@ -127,7 +127,7 @@ const money = (value: number) => `₱${value.toLocaleString("en-PH")}`;
 const formatCountdown = (seconds: number) => `${String(Math.floor(seconds / 3600)).padStart(2, "0")}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 const compact = (value: number) => value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k` : `${value}`;
 const titleForSection: Record<Section, string> = {
-  overview: "Good morning, Alex",
+  overview: "Overview",
   wallet: "E-wallet",
   marketplace: "Marketplace",
   live: "Live auctions",
@@ -176,6 +176,7 @@ export default function Home() {
   const [ownedListingsLoaded, setOwnedListingsLoaded] = useState(false);
   const [riderOrders, setRiderOrders] = useState<any[]>([]);
   const [userListings, setUserListings] = useState<Listing[]>([]);
+  const [publicListings, setPublicListings] = useState<Listing[]>([]);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [createListingOpen, setCreateListingOpen] = useState(false);
@@ -196,6 +197,14 @@ export default function Home() {
     if (!authUser || ownedListingsLoaded) return;
     fetch("/api/listings?owner=me").then((response) => response.json()).then((payload) => { setUserListings((payload.listings ?? []).map((item: Listing) => ({ ...item, seller: authUser.name }))); setOwnedListingsLoaded(true); }).catch(() => setOwnedListingsLoaded(true));
   }, [authUser, ownedListingsLoaded]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const refreshPublicListings = () => fetch("/api/listings").then((response) => response.json()).then((payload) => setPublicListings((payload.listings ?? []).map((item: Listing) => ({ ...item, seller: item.seller || "MerchantHub seller" })))).catch(() => undefined);
+    refreshPublicListings();
+    const listingPoller = window.setInterval(refreshPublicListings, 10000);
+    return () => window.clearInterval(listingPoller);
+  }, [authUser]);
 
   useEffect(() => {
     if (authUser?.role === "rider") fetch("/api/orders/active").then((response) => response.json()).then((payload) => setRiderOrders(payload.orders ?? [])).catch(() => undefined);
@@ -234,7 +243,7 @@ export default function Home() {
 
   const displayedNotifications: AppNotification[] = liveNotifications.length ? liveNotifications : seedNotifications as AppNotification[];
   const unreadCount = displayedNotifications.filter((item) => !readNotifications.includes(item.id)).length;
-  const allListings = useMemo(() => [...userListings, ...listings].filter((listing) => {
+  const allListings = useMemo(() => Array.from(new Map([...publicListings, ...userListings, ...listings].map((listing) => [listing.id, listing])).values()).filter((listing) => {
     if (listing.lifecycle === "deleted" || listing.lifecycle === "draft") return false;
     if (listing.type !== "Auction" && listing.type !== "Both") return true;
     if (listing.auctionEndAt) return new Date(listing.auctionEndAt).getTime() > Date.now();
@@ -308,7 +317,7 @@ export default function Home() {
           <div className="topbar-actions"><label className="global-search"><Search size={17} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search listings, orders, people..." /><kbd>⌘ K</kbd></label><div className="topbar-menu-wrap"><button className={`icon-button notification-button ${notificationOpen ? "is-open" : ""}`} onClick={() => { setNotificationOpen((open) => !open); setProfileOpen(false); }} aria-label="Open notifications"><Bell size={19} />{unreadCount > 0 && <span>{unreadCount}</span>}</button>{notificationOpen && <NotificationDropdown notifications={displayedNotifications} readNotifications={readNotifications} />}</div><div className="topbar-menu-wrap"><button className="top-avatar top-avatar-button" onClick={() => { setProfileOpen((open) => !open); setNotificationOpen(false); }} aria-label="Open profile menu">{authUser.name.slice(0, 2).toUpperCase()}</button>{profileOpen && <ProfileDropdown user={authUser} sellerMode={sellerMode} setSellerMode={setSellerMode} onLogout={() => { setProfileOpen(false); setAuthUser(null); setSignedOut(true); toast.success("You have been signed out"); }} />}</div></div>
         </header>
         <div className="page-content">
-          <div className="page-heading"><div><div className="eyebrow"><span className="live-dot" /> Live marketplace overview</div><h1>{titleForSection[activeSection]}</h1><p>{subtitleForSection[activeSection]}</p></div><div className="heading-actions"><button className="button primary" onClick={() => { setCreateListingOpen(true); setSellerMode(true); }}><Plus size={17} /> Create listing</button></div></div>
+          <div className="page-heading"><div><div className="eyebrow"><span className="live-dot" /> Live marketplace overview</div><h1>{activeSection === "overview" ? `Good morning, ${authUser.name}` : titleForSection[activeSection]}</h1><p>{subtitleForSection[activeSection]}</p></div><div className="heading-actions"><button className="button primary" onClick={() => { setCreateListingOpen(true); setSellerMode(true); }}><Plus size={17} /> Create listing</button></div></div>
           {activeSection === "overview" && <Overview onNavigate={navigate} favoriteIds={favoriteIds} toggleFavorite={toggleFavorite} readNotifications={readNotifications} searchQuery={searchQuery} />}
           {activeSection === "wallet" && <WalletView walletCents={walletCents} onFund={fundWallet} />}
           {activeSection === "marketplace" && <Marketplace listings={filteredListings} filter={marketFilter} setFilter={setMarketFilter} favoriteIds={favoriteIds} toggleFavorite={toggleFavorite} onOpenListing={openListing} />}
@@ -324,7 +333,7 @@ export default function Home() {
           {activeSection === "admin" && authUser?.role === "admin" && <AdminView />}
         </div>
       </main>
-      {createListingOpen && <CreateListingModal onClose={() => setCreateListingOpen(false)} onCreate={async (listing) => { const response = await fetch("/api/listings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: listing.title, description: listing.description, category: listing.category, listingType: listing.type, priceCents: Math.round(listing.price * 100), stock: listing.stock, condition: listing.condition, imageData: listing.image.startsWith("data:") ? listing.image : undefined, auctionEndAt: listing.auctionEndAt, reserveThresholdCents: listing.reserveThreshold == null ? undefined : Math.round(listing.reserveThreshold * 100), minimumIncrementCents: listing.minimumIncrement == null ? undefined : Math.round(listing.minimumIncrement * 100) }) }); const payload = await response.json(); if (!response.ok) { toast.error(payload.error ?? "Listing could not be saved"); return; } const saved = { ...(payload.listing ?? listing), seller: authUser?.name ?? "", lifecycle: "draft" as const }; setUserListings((current) => [saved, ...current]); setCreateListingOpen(false); setSellerMode(true); setLocation("/inventory"); toast.success("Listing saved as draft", { description: "Make it official from Inventory when you are ready." }); }} />}
+      {createListingOpen && <CreateListingModal onClose={() => setCreateListingOpen(false)} onCreate={async (listing) => { const response = await fetch("/api/listings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: listing.title, description: listing.description, category: listing.category, listingType: listing.type, priceCents: Math.round(listing.price * 100), stock: listing.stock, condition: listing.condition, imageData: listing.image.startsWith("data:") ? listing.image : undefined, auctionEndAt: listing.auctionEndAt, reserveThresholdCents: listing.reserveThreshold == null ? undefined : Math.round(listing.reserveThreshold * 100), minimumIncrementCents: listing.minimumIncrement == null ? undefined : Math.round(listing.minimumIncrement * 100) }) }); const payload = await response.json(); if (!response.ok) { toast.error(payload.error ?? "Listing could not be saved"); return; } const saved = { ...(payload.listing ?? listing), seller: authUser?.name ?? "", lifecycle: "official" as const }; setUserListings((current) => [saved, ...current]); setPublicListings((current) => [saved, ...current]); setCreateListingOpen(false); setSellerMode(true); setLocation("/inventory"); toast.success("Listing published", { description: "Your listing is now visible in the marketplace." }); }} />}
     </div>
   );
 }

@@ -26,6 +26,13 @@ export const registerLogisticsRoutes = (app: Express) => {
     await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId} is being prepared for ${body.municipality || user.municipality || "your location"}.`, orderId);
     return res.status(201).json({ ok: true, orderId, location: { province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null } });
   });
+  app.get("/api/orders/:orderId", async (req, res) => {
+    const user = await auth(req, res); if (!user) return;
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const order = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
+    if (!order || (user.role !== "admin" && user.id !== order.buyerId && user.id !== order.sellerId && user.id !== order.riderId)) return res.status(404).json({ ok: false, error: "Order not found." });
+    return res.json({ ok: true, order });
+  });
   app.get("/api/orders/active", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });

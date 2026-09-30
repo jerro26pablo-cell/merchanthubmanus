@@ -14,11 +14,14 @@ function Router() {
       <Route path="/auctions" component={Home} />
       <Route path="/auction/:id" component={Home} />
       <Route path="/item/:id" component={Home} />
+      <Route path="/checkout/:id" component={Home} />
+      <Route path="/order/:id" component={Home} />
       <Route path="/orders" component={Home} />
       <Route path="/payments" component={Home} />
       <Route path="/rider" component={Home} />
       <Route path="/inventory" component={Home} />
       <Route path="/store" component={Home} />
+      <Route path="/store/:id" component={Home} />
       <Route path="/messages" component={Home} />
       <Route path="/saved" component={Home} />
       <Route path="/bidding" component={Home} />

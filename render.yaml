@@ -5,7 +5,6 @@ services:
     plan: free
     branch: main
     dockerfilePath: ./Dockerfile
-    dockerContext: .
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
@@ -16,17 +15,3 @@ services:
         generateValue: true
       - key: SESSION_SECRET
         generateValue: true
-      - key: MANUS_PROJECT_ID
-        value: ""
-      - key: OWNER_OPEN_ID
-        value: ""
-      - key: MANUS_OAUTH_API_URL
-        value: ""
-      - key: MANUS_API_URL
-        value: ""
-      - key: MANUS_API_KEY
-        value: ""
-      - key: STRIPE_SECRET_KEY
-        value: ""
-      - key: STRIPE_WEBHOOK_SECRET
-        value: ""

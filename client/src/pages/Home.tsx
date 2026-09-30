@@ -346,7 +346,7 @@ export default function Home() {
           {activeSection === "wallet" && <WalletView walletCents={walletCents} onFund={fundWallet} />}
           {activeSection === "marketplace" && <Marketplace listings={filteredListings} filter={marketFilter} setFilter={setMarketFilter} favoriteIds={favoriteIds} toggleFavorite={toggleFavorite} onOpenListing={openListing} />}
           {activeSection === "live" && <LiveAuctions favoriteIds={favoriteIds} toggleFavorite={toggleFavorite} onOpenListing={openListing} />}
-          {activeSection === "detail" && <ItemDetail listingId={location.split("/").pop() ?? "sony-xm5"} customListings={userListings} authUser={authUser} onBack={() => navigate("marketplace")} />}
+          {activeSection === "detail" && <ItemDetail listingId={location.split("/").pop() ?? "sony-xm5"} customListings={allListings} authUser={authUser} onBack={() => navigate("marketplace")} />}
           {activeSection === "auction" && <AuctionDetail auctionSeconds={auctionSeconds} walletCents={walletCents} currentBid={currentBid} bidAmount={bidAmount} maxBid={maxBid} bidIncrement={bidIncrement} setBidAmount={setBidAmount} setMaxBid={setMaxBid} setBidIncrement={setBidIncrement} bidFeed={bidFeed} placeBid={placeBid} />}
           {activeSection === "bidding" && <BiddingHistoryView bidFeed={bidFeed} currentBid={currentBid} onOpenAuction={() => navigate("auction")} />}
           {activeSection === "orders" && <OrdersView orders={accountOrders} deliveryStatuses={deliveryStatuses} changeOrderStatus={changeOrderStatus} />}
@@ -463,7 +463,7 @@ function ItemDetail({ listingId, customListings, authUser, onBack }: { listingId
   const [selectedPhoto, setSelectedPhoto] = useState(0);
   const [compareOpen, setCompareOpen] = useState(false);
   const gallery = listing.photos?.length ? listing.photos : [listing.image];
-  const similar = listings.filter((item) => item.id !== listing.id && item.category === listing.category).slice(0, 1)[0] ?? listings.find((item) => item.id !== listing.id);
+  const similar = [...customListings, ...listings].filter((item) => item.id !== listing.id && item.category === listing.category).slice(0, 1)[0] ?? [...customListings, ...listings].find((item) => item.id !== listing.id);
   const isAuction = listing.type === "Auction" || listing.type === "Both";
   const canBuyNow = listing.type === "Buy now" || listing.type === "Both";
   const price = listing.buyNow ?? listing.price;

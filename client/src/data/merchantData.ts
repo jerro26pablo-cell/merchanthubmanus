@@ -26,6 +26,7 @@ export type Listing = {
   bidders?: number;
   timeLeft?: string;
   image: string;
+  photos?: string[];
   seller: string;
   sellerRating: number;
   condition: "New" | "Like new" | "Good";

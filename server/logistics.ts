@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { and, eq, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, riderLocations } from "../drizzle/schema";
+import { commerceOrders, listingsOwned, riderLocations } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => {
@@ -16,15 +16,20 @@ export const registerLogisticsRoutes = (app: Express) => {
     const body = req.body ?? {}; const listingId = String(body.listingId ?? "");
     if (!listingId) return res.status(400).json({ ok: false, error: "Listing is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    if (!listing || listing.lifecycle !== "official") return res.status(404).json({ ok: false, error: "This listing is no longer available." });
+    const requestedQuantity = Math.max(1, Math.round(Number(body.quantity) || 1));
+    if (requestedQuantity > listing.stock) return res.status(409).json({ ok: false, error: `Only ${listing.stock} item(s) remain in stock.` });
     const orderId = `MH-${Date.now().toString().slice(-6)}`;
-    await db.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: Number(body.sellerId) || 1, quantity: Math.max(1, Math.round(Number(body.quantity) || 1)), amountCents: Math.max(0, Math.round(Number(body.amountCents) || 0)), payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, status: "Processing" });
+    await db.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, amountCents: Math.max(0, Math.round(Number(body.amountCents) || 0)), payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, status: "Processing" });
+    await db.update(listingsOwned).set({ stock: listing.stock - requestedQuantity }).where(eq(listingsOwned.listingId, listingId));
     await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId} is being prepared for ${body.municipality || user.municipality || "your location"}.`, orderId);
     return res.status(201).json({ ok: true, orderId, location: { province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null } });
   });
   app.get("/api/orders/active", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit"))) : await db.select().from(commerceOrders).where(eq(commerceOrders.buyerId, user.id));
+    const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), and(eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit"))))) : user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
     return res.json({ ok: true, orders: rows });
   });
   app.post("/api/orders/:orderId/accept", async (req, res) => {

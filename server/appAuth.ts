@@ -133,18 +133,17 @@ export function registerAppAuthRoutes(app: Express) {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     try {
       await db.execute(sql.raw("DELETE FROM proxy_bids")); await db.execute(sql.raw("DELETE FROM commerce_orders")); await db.execute(sql.raw("DELETE FROM payment_orders")); await db.execute(sql.raw("DELETE FROM stripe_events")); await db.execute(sql.raw("DELETE FROM shipping_labels")); await db.execute(sql.raw("DELETE FROM notifications")); await db.execute(sql.raw("DELETE FROM rider_locations")); await db.execute(sql.raw("DELETE FROM listings_owned"));
-      await db.execute(sql.raw("DELETE FROM users WHERE role NOT IN ('admin','rider') AND (email IS NULL OR email NOT LIKE 'test1%')"));
-      let demo = (await db.select().from(users).where(eq(users.email, "demo@merchanthub.ph")).limit(1))[0];
-      if (!demo) { const [created] = await db.insert(users).values({ openId: "local:demo@merchanthub.ph", name: "MerchantHub Demo Store", email: "demo@merchanthub.ph", passwordHash: await hashPassword("demo123"), province: "South Cotabato", municipality: "Polomolok", walletCents: 0, loginMethod: "password", role: "user", storeName: "MerchantHub Demo Store", sellerEnabled: 1 }).$returningId(); demo = (await db.select().from(users).where(eq(users.id, created.id)).limit(1))[0]; }
-      if (!demo) return res.status(500).json({ ok: false, error: "Demo seller could not be created." });
-      await db.update(users).set({ storeName: "MerchantHub Demo Store", sellerEnabled: 1 }).where(eq(users.id, demo.id));
+      await db.execute(sql.raw("DELETE FROM users WHERE role NOT IN ('admin','rider')"));
+      const demo = (await db.select().from(users).where(eq(users.email, ADMIN_EMAIL)).limit(1))[0];
+      if (!demo) return res.status(500).json({ ok: false, error: "Admin account could not be loaded." });
+      await db.update(users).set({ storeName: "MerchantHub Operations Store", sellerEnabled: 1 }).where(eq(users.id, demo.id));
       const seed = [
         ["demo-buy-now", "Demo Buy Now Camera", "Buy now", 125000, "Cameras"],
         ["demo-auction-headphones", "Demo Auction Headphones", "Auction", 650000, "Audio"],
         ["demo-both-record-player", "Demo Auction + Buy Now Record Player", "Both", 280000, "Collectibles"],
       ] as const;
       for (const [listingId, title, listingType, priceCents, category] of seed) await db.execute(sql.raw(`INSERT INTO listings_owned (listingId, ownerId, title, description, category, listingType, priceCents, stock, condition, imageData, auctionEndAt, reserveThresholdCents, minimumIncrementCents, lifecycle) VALUES ('${listingId}', ${demo.id}, '${title}', 'Demo listing for the MerchantHub marketplace.', '${category}', '${listingType}', ${priceCents}, 1, 'Like new', NULL, ${listingType === "Buy now" ? "NULL" : "DATE_ADD(NOW(), INTERVAL 7 DAY)"}, ${listingType === "Buy now" ? "NULL" : Math.round(priceCents * 0.8)}, ${listingType === "Buy now" ? "NULL" : 1000}, 'official')`));
-      return res.json({ ok: true, message: "Demo marketplace reset complete.", demoEmail: "demo@merchanthub.ph", demoPassword: "demo123" });
+      return res.json({ ok: true, message: "Demo marketplace reset complete.", preservedAccounts: [ADMIN_EMAIL, RIDER_EMAIL] });
     } catch (error) { console.error("[Admin] Demo reset failed", error); return res.status(500).json({ ok: false, error: "Demo reset failed. Check Render logs." }); }
   });
 }

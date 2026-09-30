@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "./db";
 import { listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
-import { settleExpiredAuctions } from "./notifications";
+import { createNotification, settleExpiredAuctions } from "./notifications";
 
 const requireUser = async (req: Request, res: Response) => { const user = await getAppUser(req); if (!user) { res.status(401).json({ ok: false, error: "Please log in to use your wallet." }); return undefined; } return user; };
 const pesos = (cents: number) => `₱${(cents / 100).toLocaleString("en-PH")}`;
@@ -23,7 +23,10 @@ export function registerBiddingRoutes(app: Express) {
     const listing = (await db.select({ auctionEndAt: listingsOwned.auctionEndAt }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (listing?.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
     const active = await activeForListing(db, listingId); const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); const requiredBid = currentBidCents + incrementCents;
-    if (maxBidCents < requiredBid) return res.status(409).json({ ok: false, error: `This auction moved to ${pesos(currentBidCents)}. Your max bid must be at least ${pesos(requiredBid)}.`, currentBidCents, requiredBid });
+    if (maxBidCents < requiredBid) {
+      await createNotification(user.id, "system", "Proxy bid limit reached", `The next bid would be ${pesos(requiredBid)}, above your maximum of ${pesos(maxBidCents)}. Increase your maximum bid to continue.`, listingId);
+      return res.status(409).json({ ok: false, error: `Your maximum bid limit was reached. The next bid is ${pesos(requiredBid)}, above your cap of ${pesos(maxBidCents)}.`, currentBidCents, requiredBid, limitReached: true });
+    }
     await db.update(proxyBids).set({ status: "outbid" }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "active")));
     const currentAfterBid = Math.min(maxBidCents, requiredBid); const [created] = await db.insert(proxyBids).values({ userId: user.id, listingId, maxBidCents, incrementCents, currentBidCents: currentAfterBid, status: "active" }).$returningId(); const row = (await db.select().from(proxyBids).where(eq(proxyBids.id, created.id)).limit(1))[0];
     return res.json({ ok: true, proxy: row, walletCents: user.walletCents, currentBidCents: currentAfterBid });

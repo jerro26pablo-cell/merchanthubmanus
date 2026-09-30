@@ -57,6 +57,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   priceCents: int("priceCents").notNull(),
   stock: int("stock").notNull().default(1),
   condition: mysqlEnum("condition", ["New", "Like new", "Good"]).notNull(),
+  /** JSON array of product photo data URLs; first item remains the cover image. */
   imageData: longtext("imageData"),
   auctionEndAt: timestamp("auctionEndAt"),
   reserveThresholdCents: int("reserveThresholdCents"),

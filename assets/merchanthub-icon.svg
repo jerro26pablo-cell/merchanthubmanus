@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="MerchantHub parcel bid icon">
+  <rect width="512" height="512" fill="#F7F4EE"/>
+  <path d="M118 180 256 112l138 68v146l-138 74-138-74Z" fill="#182329"/>
+  <path d="m118 180 138 73 138-73-138-68Z" fill="#2D9C8B"/>
+  <path d="M256 253v147" stroke="#F7F4EE" stroke-width="14" stroke-linecap="round"/>
+  <path d="m184 300 72 42 72-42" fill="none" stroke="#F7F4EE" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M172 212 306 142v44l58-30-95 112v-45l-60 31Z" fill="#F36F5B"/>
+</svg>

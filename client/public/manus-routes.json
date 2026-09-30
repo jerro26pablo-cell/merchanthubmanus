@@ -1,0 +1,17 @@
+{
+  "routes": [
+    { "path": "/", "title": "MerchantHub Overview" },
+    { "path": "/marketplace", "title": "Marketplace" },
+    { "path": "/auctions", "title": "Live Auctions" },
+    { "path": "/auction/:id", "title": "Auction Detail" },
+    { "path": "/item/:id", "title": "Item Detail & Checkout" },
+    { "path": "/orders", "title": "Orders" },
+    { "path": "/payments", "title": "Payments & Labels" },
+    { "path": "/wallet", "title": "E-wallet" },
+    { "path": "/rider", "title": "Rider Desk" },
+    { "path": "/inventory", "title": "Inventory & Analytics" },
+    { "path": "/messages", "title": "Messages" },
+    { "path": "/saved", "title": "Saved Items" },
+    { "path": "/admin-dashboard", "title": "Admin Dashboard" }
+  ]
+}

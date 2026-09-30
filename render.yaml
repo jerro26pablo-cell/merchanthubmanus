@@ -17,16 +17,16 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: MANUS_PROJECT_ID
-        sync: false
+        value: ""
       - key: OWNER_OPEN_ID
-        sync: false
+        value: ""
       - key: MANUS_OAUTH_API_URL
-        sync: false
+        value: ""
       - key: MANUS_API_URL
-        sync: false
+        value: ""
       - key: MANUS_API_KEY
-        sync: false
+        value: ""
       - key: STRIPE_SECRET_KEY
-        sync: false
+        value: ""
       - key: STRIPE_WEBHOOK_SECRET
-        sync: false
+        value: ""

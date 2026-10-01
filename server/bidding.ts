@@ -20,15 +20,26 @@ export function registerBiddingRoutes(app: Express) {
     if (!listingId || !Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100) return res.status(400).json({ ok: false, error: "Listing, max bid, and a minimum increment of at least ₱1 are required." });
     if (maxBidCents > user.walletCents) return res.status(400).json({ ok: false, error: `Your max bid cannot exceed your e-wallet balance of ${pesos(user.walletCents)}.` });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const listing = (await db.select({ auctionEndAt: listingsOwned.auctionEndAt }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-    if (listing?.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
-    const active = await activeForListing(db, listingId); const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); const requiredBid = currentBidCents + incrementCents;
-    if (maxBidCents < requiredBid) {
-      await createNotification(user.id, "system", "Proxy bid limit reached", `The next bid would be ${pesos(requiredBid)}, above your maximum of ${pesos(maxBidCents)}. Increase your maximum bid to continue.`, listingId);
-      return res.status(409).json({ ok: false, error: `Your maximum bid limit was reached. The next bid is ${pesos(requiredBid)}, above your cap of ${pesos(maxBidCents)}.`, currentBidCents, requiredBid, limitReached: true });
-    }
+    const listing = (await db.select({ ownerId: listingsOwned.ownerId, priceCents: listingsOwned.priceCents, auctionEndAt: listingsOwned.auctionEndAt }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
+    if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot bid on your own listing." });
+    if (listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
+    const initialBidCents = Math.round(Number(req.body?.bidCents));
+    const active = await activeForListing(db, listingId);
+    const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), listing.priceCents);
+    const requiredBid = currentBidCents + incrementCents;
+    if (maxBidCents < requiredBid) { await createNotification(user.id, "system", "Proxy bid limit reached", `The next bid would be ${pesos(requiredBid)}, above your maximum of ${pesos(maxBidCents)}. Increase your maximum bid to continue.`, listingId); return res.status(409).json({ ok: false, error: `Your maximum bid is below the next increment of ${pesos(requiredBid)}.`, limitReached: true }); }
+    if (maxBidCents < initialBidCents) return res.status(400).json({ ok: false, error: "Your maximum bid must be at least your opening bid." });
+    if (!Number.isFinite(initialBidCents) || initialBidCents < requiredBid) return res.status(400).json({ ok: false, error: `Your bid must be at least ${pesos(requiredBid)}.` });
     await db.update(proxyBids).set({ status: "outbid" }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "active")));
-    const currentAfterBid = Math.min(maxBidCents, requiredBid); const [created] = await db.insert(proxyBids).values({ userId: user.id, listingId, maxBidCents, incrementCents, currentBidCents: currentAfterBid, status: "active" }).$returningId(); const row = (await db.select().from(proxyBids).where(eq(proxyBids.id, created.id)).limit(1))[0];
-    return res.json({ ok: true, proxy: row, walletCents: user.walletCents, currentBidCents: currentAfterBid });
+    const [created] = await db.insert(proxyBids).values({ userId: user.id, listingId, maxBidCents, incrementCents, currentBidCents: initialBidCents, status: "active" }).$returningId();
+    const proxies = await activeForListing(db, listingId);
+    proxies.sort((a, b) => b.maxBidCents - a.maxBidCents || a.id - b.id);
+    const winner = proxies[0]; const runner = proxies[1];
+    const winningCurrent = Math.min(winner.maxBidCents, Math.max(initialBidCents, runner ? runner.maxBidCents + winner.incrementCents : initialBidCents));
+    await db.update(proxyBids).set({ currentBidCents: 0 }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active")));
+    await db.update(proxyBids).set({ currentBidCents: winningCurrent }).where(eq(proxyBids.id, winner.id));
+    const row = (await db.select().from(proxyBids).where(eq(proxyBids.id, created.id)).limit(1))[0];
+    return res.json({ ok: true, proxy: row, walletCents: user.walletCents, currentBidCents: winningCurrent, leadingUserId: winner.userId });
   });
 }

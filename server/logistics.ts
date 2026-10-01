@@ -69,7 +69,8 @@ export const registerLogisticsRoutes = (app: Express) => {
     const user = await auth(req, res); if (!user || user.role !== "rider") return res.status(403).json({ ok: false, error: "Rider access required." });
     const latitude = String(req.body?.latitude ?? ""); const longitude = String(req.body?.longitude ?? ""); if (!latitude || !longitude) return res.status(400).json({ ok: false, error: "Coordinates are required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const active = (await db.select().from(commerceOrders).where(and(eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit")))).limit(1))[0];
+    const requestedOrderId = req.body?.orderId ? String(req.body.orderId) : "";
+    const active = requestedOrderId ? (await db.select().from(commerceOrders).where(and(eq(commerceOrders.orderId, requestedOrderId), eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit")))).limit(1))[0] : (await db.select().from(commerceOrders).where(and(eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit")))).limit(1))[0];
     await db.insert(riderLocations).values({ riderId: user.id, orderId: active?.orderId ?? null, latitude, longitude, accuracy: req.body?.accuracy ? String(req.body.accuracy) : null, moving: req.body?.moving ? 1 : 0 }).onDuplicateKeyUpdate({ set: { orderId: active?.orderId ?? null, latitude, longitude, accuracy: req.body?.accuracy ? String(req.body.accuracy) : null, moving: req.body?.moving ? 1 : 0 } });
     return res.json({ ok: true, updatedAt: new Date().toISOString(), moving: Boolean(req.body?.moving) });
   });

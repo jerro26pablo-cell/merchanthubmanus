@@ -16,6 +16,12 @@ export const registerMessageRoutes = (app: Express) => {
     const peopleMap = new Map(people.map((person) => [person.id, person])); const listingMap = new Map(listings.map((listing) => [listing.id, listing.title]));
     return res.json({ ok: true, messages: rows.map((row) => ({ ...row, otherUserId: row.senderId === user.id ? row.recipientId : row.senderId, otherUser: peopleMap.get(row.senderId === user.id ? row.recipientId : row.senderId)?.name ?? "MerchantHub user", listingTitle: row.listingId ? listingMap.get(row.listingId) ?? "Listing" : "General message" })) });
   });
+  app.post("/api/messages/:messageId/read", async (req, res) => {
+    const user = await auth(req, res); if (!user) return;
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await db.update(messages).set({ readAt: new Date() }).where(and(eq(messages.id, Number(req.params.messageId)), eq(messages.recipientId, user.id)));
+    return res.json({ ok: true });
+  });
   app.post("/api/messages", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const recipientId = Number(req.body?.recipientId); const body = String(req.body?.body ?? "").trim(); const listingId = req.body?.listingId ? String(req.body.listingId) : null;

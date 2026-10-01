@@ -82,6 +82,12 @@ type Tone = "coral" | "teal" | "mustard" | "lavender" | "ink";
 type AppNotification = { id: string; label: string; time: string; tone: Tone; message?: string };
 type OverviewMetrics = { grossSalesCents: number; liveAuctions: number; ordersInTransit: number; availableStock: number; skuCount: number };
 
+const isLiveAuctionListing = (listing: Listing) => {
+  const type = String(listing.type ?? "").trim().toLowerCase();
+  if (listing.lifecycle === "deleted" || listing.lifecycle === "draft" || (type !== "auction" && type !== "both")) return false;
+  return !listing.auctionEndAt || new Date(listing.auctionEndAt).getTime() > Date.now();
+};
+
 const navGroups = [
   {
     label: "Workspace",
@@ -210,7 +216,7 @@ export default function Home() {
   const [walletCents, setWalletCents] = useState(0);
   const [sellerOnboardingOpen, setSellerOnboardingOpen] = useState(false);
   const [overviewMetrics, setOverviewMetrics] = useState<OverviewMetrics>({ grossSalesCents: 0, liveAuctions: 0, ordersInTransit: 0, availableStock: 0, skuCount: 0 });
-  const liveAuctionListings = useMemo(() => Array.from(new Map([...publicListings, ...userListings].map((listing) => [listing.id, listing])).values()).filter((listing) => (listing.type === "Auction" || listing.type === "Both") && (!listing.auctionEndAt || new Date(listing.auctionEndAt).getTime() > Date.now())), [publicListings, userListings]);
+  const liveAuctionListings = useMemo(() => Array.from(new Map([...publicListings, ...userListings].map((listing) => [listing.id, listing])).values()).filter(isLiveAuctionListing), [publicListings, userListings, auctionSeconds]);
   const auctionPathId = location.startsWith("/auction/") ? location.split("/").pop() : undefined;
   const selectedAuction = liveAuctionListings.find((listing) => listing.id === auctionPathId) ?? liveAuctionListings[0];
 
@@ -431,7 +437,7 @@ function Overview({ metrics, auctionSeconds, onNavigate, favoriteIds, toggleFavo
 }
 
 function LiveAuctions({ items, favoriteIds, toggleFavorite, onOpenListing }: { items: Listing[]; favoriteIds: string[]; toggleFavorite: (id: string) => void; onOpenListing: (id: string) => void }) {
-  const liveListings = items;
+  const liveListings = items.filter(isLiveAuctionListing);
   return <div className="section-stack"><div className="live-auctions-banner"><div><div className="eyebrow coral-text"><span className="live-dot" /> Live floor · {liveListings.length} auctions active</div><h2>Find the moment before it moves.</h2><p>Real-time-style bid signals, transparent reserve states, and fair anti-snipe windows.</p></div><div className="live-floor-stats"><div><strong>{money(liveListings.reduce((sum, item) => sum + (item.currentBid ?? item.price), 0))}</strong><span>value in play</span></div><div><strong>{liveListings.reduce((sum, item) => sum + (item.bidders ?? 0), 0)}</strong><span>active bidders</span></div><div><strong>{liveListings.length ? "Live" : "—"}</strong><span>next close</span></div></div></div><div className="market-summary"><div><span className="eyebrow">Live inventory</span><strong>{liveListings.length} active auctions</strong></div><div className="summary-right"><span><span className="live-dot" /> Bids updating live</span><button className="sort-button">Sort: Ending soon <ChevronDown size={15} /></button></div></div><div className="listing-grid">{liveListings.map((listing) => <ListingCard key={listing.id} listing={listing} favorite={favoriteIds.includes(listing.id)} onFavorite={() => toggleFavorite(listing.id)} onClick={() => onOpenListing(listing.id)} />)}</div><section className="panel live-feed-strip"><div className="panel-header"><div><div className="eyebrow teal-text"><span className="live-dot teal" /> Live bid feed</div><h2>Momentum across the floor</h2></div><button className="text-button">Open feed <ChevronRight size={15} /></button></div><div className="floor-feed"><span><b>MS</b> raised Sony XM5 to <strong>₱8,450</strong></span><span><b>JL</b> entered camera room with a <strong>₱43,100</strong> bid</span><span><b>KR</b> saved New Balance 990v5</span></div></section></div>;
 }
 

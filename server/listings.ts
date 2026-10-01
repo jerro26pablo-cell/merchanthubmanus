@@ -3,6 +3,7 @@ import { and, eq, ne, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
 import { commerceOrders, listingsOwned, users } from "../drizzle/schema";
+import { notifySavedSearchMatches } from "./savedSearches";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -58,6 +59,7 @@ export const registerListingRoutes = (app: Express) => {
       const photos = Array.isArray(body.photos) ? body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5) : body.imageData ? [String(body.imageData)] : [];
       await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), listingType, priceCents, buyNowPriceCents: listingType === "Both" ? buyNowPriceCents : null, stock, condition: body.condition ?? "New", imageData: photos.length ? JSON.stringify(photos) : null, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle });
       const row = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+      if (row) await notifySavedSearchMatches(row);
       return res.status(201).json({ ok: true, listing: row ? toListing(row, user.storeName || user.name) : null });
     } catch (error) {
       console.error("[Listings] Failed to create listing", error);

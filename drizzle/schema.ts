@@ -162,5 +162,14 @@ export const wishlists = mysqlTable("wishlists", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const savedSearches = mysqlTable("savedSearches", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  name: varchar("name", { length: 120 }).notNull(),
+  query: varchar("query", { length: 255 }).notNull().default(""),
+  filter: varchar("filter", { length: 80 }).notNull().default("All items"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export type PaymentOrder = typeof paymentOrders.$inferSelect;
 export type ShippingLabel = typeof shippingLabels.$inferSelect;

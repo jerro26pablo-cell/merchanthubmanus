@@ -20,8 +20,16 @@ export async function settleExpiredAuctions() {
       await createNotification(winner.userId, "auction_won", "Auction won", `You won “${listing.title}” at ₱${(winner.currentBidCents / 100).toLocaleString("en-PH")}.`, listing.listingId);
       await createNotification(listing.ownerId, "auction_won", "Auction ended with a winner", `“${listing.title}” was won at ₱${(winner.currentBidCents / 100).toLocaleString("en-PH")}.`, listing.listingId);
       await db.update(proxyBids).set({ status: "won" }).where(eq(proxyBids.id, winner.id));
+      for (const bidder of bids.filter((bid) => bid.id !== winner.id)) {
+        await db.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(eq(proxyBids.id, bidder.id));
+        await createNotification(bidder.userId, "system", "Auction lost", `The auction for “${listing.title}” ended at ₱${(winner.currentBidCents / 100).toLocaleString("en-PH")}.`, listing.listingId);
+      }
     } else {
       await createNotification(listing.ownerId, "system", "Auction ended without a sale", `“${listing.title}” ended without meeting its reserve threshold.`, listing.listingId);
+      for (const bidder of bids) {
+        await db.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(eq(proxyBids.id, bidder.id));
+        await createNotification(bidder.userId, "system", "Auction ended", `The auction for “${listing.title}” ended without meeting the reserve threshold.`, listing.listingId);
+      }
     }
     await db.update(listingsOwned).set({ settledAt: new Date() }).where(eq(listingsOwned.id, listing.id));
   }

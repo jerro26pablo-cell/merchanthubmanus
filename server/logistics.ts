@@ -59,6 +59,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const current = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!current) return res.status(404).json({ ok: false, error: "Order not found." });
+    if (user.role === "rider" && current.riderId !== user.id) return res.status(403).json({ ok: false, error: "This delivery is not assigned to you." });
     await db.update(commerceOrders).set({ status: nextStatus }).where(eq(commerceOrders.orderId, req.params.orderId));
     await createNotification(current.buyerId, "delivery_update", `Delivery ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
     if (current.sellerId) await createNotification(current.sellerId, "delivery_update", `Order ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
@@ -77,7 +78,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const order = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!order || (user.role !== "rider" && user.id !== order.buyerId && user.id !== order.sellerId && user.role !== "admin")) return res.status(404).json({ ok: false, error: "Order not found." });
-    const location = (await db.select().from(riderLocations).where(eq(riderLocations.orderId, req.params.orderId)).limit(1))[0];
+    const location = (await db.select().from(riderLocations).where(eq(riderLocations.orderId, req.params.orderId)).limit(1))[0] ?? (order.riderId ? (await db.select().from(riderLocations).where(eq(riderLocations.riderId, order.riderId)).limit(1))[0] : undefined);
     return res.json({ ok: true, order, location: location ?? null });
   });
 };

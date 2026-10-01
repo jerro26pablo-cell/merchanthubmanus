@@ -10,6 +10,7 @@
     { "idx": 5, "version": "5", "when": 1790761963339, "tag": "0005_majestic_microbe", "breakpoints": true },
     { "idx": 6, "version": "5", "when": 1790763000000, "tag": "0006_store_profiles_and_large_images", "breakpoints": true },
     { "idx": 7, "version": "5", "when": 1790764000000, "tag": "0007_buyer_delivery_coordinates", "breakpoints": true },
-    { "idx": 8, "version": "5", "when": 1790765000000, "tag": "0008_messages_and_wishlists", "breakpoints": true }
+    { "idx": 8, "version": "5", "when": 1790765000000, "tag": "0008_messages_and_wishlists", "breakpoints": true },
+    { "idx": 9, "version": "5", "when": 1790766000000, "tag": "0009_both_listing_buy_now_price", "breakpoints": true }
   ]
 }

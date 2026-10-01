@@ -286,3 +286,21 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 
 /* Wallet, seller lifecycle, and live rider tracking */
 .wallet-hero{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:20px;background:linear-gradient(135deg,#14343b,#1d5c5c);color:#fff;border:0}.wallet-hero h2{margin:4px 0 6px}.wallet-hero p{color:#cfe5df;max-width:560px}.wallet-hero>strong{font-size:34px;color:#ffd56c}.wallet-orbit{width:64px;height:64px;border-radius:20px;display:grid;place-items:center;background:#e6b85c;color:#173840}.wallet-fund-panel{max-width:760px}.wallet-topup-grid{display:flex;gap:12px;align-items:end}.wallet-topup-grid .field-label{flex:1}.wallet-topup-grid .button{height:42px}.sandbox-badge{display:inline-flex;gap:6px;align-items:center;color:#2d9c8b;background:#e8f6f1;padding:7px 10px;border-radius:999px;font-size:12px;font-weight:700}.leaflet-rider-map{height:360px;border-radius:16px;overflow:hidden;background:#dbe9e4}.inventory-manage-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.inventory-manage-actions .button{flex:1;min-width:110px}.checkout-location-editor{display:grid;gap:6px;padding:14px 16px;margin-bottom:12px;border:1px solid #dce5df;border-radius:14px;background:#f8fbf9}.checkout-location-editor strong{font-size:14px}.checkout-location-editor input{width:100%;padding:10px 12px;border:1px solid #d5e0da;border-radius:9px;background:#fff}.bid-helper{display:block;color:#71807d;margin-top:9px}.empty-state{display:grid;place-items:center;gap:8px;padding:42px;color:#71807d}.empty-state strong{color:#243b3d}.filter-tabs{display:flex;gap:5px}.filter-tabs button{border:0;background:transparent;padding:8px 10px;border-radius:9px;color:#71807d;text-transform:capitalize}.filter-tabs button.active{background:#e9f5f1;color:#167467;font-weight:700}.field-help{color:#71807d;font-size:13px;line-height:1.5}.status-badge{display:inline-flex;padding:5px 8px;border-radius:99px;background:#e8f6f1;color:#267d71;font-size:11px;font-weight:700}.map-footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.map-footer span{display:inline-flex;align-items:center;gap:7px}.legend-dot{width:8px;height:8px;border-radius:50%;background:#2d9c8b;display:inline-block}@media(max-width:720px){.wallet-hero{grid-template-columns:auto 1fr}.wallet-hero>strong{grid-column:2;font-size:26px}.wallet-topup-grid{display:grid}.leaflet-rider-map{height:280px}}
+
+/* Product galleries and account bidding timeline */
+.listing-image { position: relative; }
+.listing-image-button { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.gallery-arrow { position: absolute; top: 50%; z-index: 2; transform: translateY(-50%); width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.8); border-radius: 50%; background: rgba(24,35,41,.68); color: white; cursor: pointer; }
+.gallery-arrow:hover { background: #f36f5b; }
+.gallery-prev { left: 10px; }
+.gallery-next { right: 10px; }
+.gallery-count { position: absolute; right: 10px; bottom: 10px; z-index: 2; padding: 3px 7px; border-radius: 999px; background: rgba(24,35,41,.72); color: #fff; font-size: 11px; font-weight: 700; }
+.buy-now-action { border-color: #f36f5b; color: #c85343; }
+.bid-history-list { display: grid; gap: 10px; }
+.bid-history-card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 18px; align-items: center; padding: 16px; border: 1px solid #e8e4da; border-radius: 14px; background: #fffefb; }
+.bid-history-card h3 { margin: 4px 0; }
+.bid-history-card small, .bid-history-card span { color: #65706e; font-size: 12px; }
+.status-badge.winning { color: #2d9c8b; }
+.status-badge.losing, .status-badge.lost { color: #c85343; }
+.status-badge.won { color: #9a741b; }
+@media (max-width: 760px) { .bid-history-card { grid-template-columns: 1fr; gap: 8px; } }

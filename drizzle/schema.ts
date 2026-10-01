@@ -55,6 +55,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   category: varchar("category", { length: 80 }).notNull(),
   listingType: mysqlEnum("listingType", ["Auction", "Buy now", "Both"]).notNull(),
   priceCents: int("priceCents").notNull(),
+  buyNowPriceCents: int("buyNowPriceCents"),
   stock: int("stock").notNull().default(1),
   condition: mysqlEnum("condition", ["New", "Like new", "Good"]).notNull(),
   /** JSON array of product photo data URLs; first item remains the cover image. */

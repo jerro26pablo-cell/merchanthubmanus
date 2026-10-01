@@ -3,6 +3,7 @@ import { and, eq, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
 import { listingsOwned, messages, users, wishlists } from "../drizzle/schema";
+import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => { const user = await getAppUser(req); if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; } return user; };
 export const registerMessageRoutes = (app: Express) => {
@@ -22,6 +23,7 @@ export const registerMessageRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const recipient = (await db.select().from(users).where(eq(users.id, recipientId)).limit(1))[0]; if (!recipient) return res.status(404).json({ ok: false, error: "Recipient not found." });
     const result = await db.insert(messages).values({ recipientId, senderId: user.id, listingId, body }).$returningId();
+    await createNotification(recipientId, "system", "New message", `${user.name} sent you a message${listingId ? " about a listing" : ""}.`, listingId ?? undefined);
     return res.status(201).json({ ok: true, messageId: result[0]?.id });
   });
   app.get("/api/wishlist", async (req, res) => {

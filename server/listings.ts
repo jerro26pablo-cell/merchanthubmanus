@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { and, eq, ne, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingsOwned, users } from "../drizzle/schema";
+import { commerceOrders, listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { notifySavedSearchMatches } from "./savedSearches";
 
 const requireUser = async (req: Request, res: Response) => {
@@ -96,6 +96,7 @@ export const registerListingRoutes = (app: Express) => {
     const created = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name) : null });
   });
+  app.post("/api/listings/:listingId/re-auction", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const listing = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0]; if (!listing || (listing.listingType !== "Auction" && listing.listingType !== "Both")) return res.status(404).json({ ok: false, error: "Auction listing not found." }); const end = new Date(Date.now() + 24 * 60 * 60 * 1000); await db.update(listingsOwned).set({ lifecycle: "official", auctionEndAt: end, settledAt: null }).where(eq(listingsOwned.listingId, listing.listingId)); await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.listingId, listing.listingId)); const refreshed = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listing.listingId)).limit(1))[0]; return res.json({ ok: true, listing: refreshed ? toListing(refreshed, user.storeName || user.name) : null }); });
   app.delete("/api/listings/:listingId", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });

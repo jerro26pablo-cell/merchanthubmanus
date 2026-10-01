@@ -79,7 +79,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const order = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!order || (user.role !== "rider" && user.id !== order.buyerId && user.id !== order.sellerId && user.role !== "admin")) return res.status(404).json({ ok: false, error: "Order not found." });
-    const location = (await db.select().from(riderLocations).where(eq(riderLocations.orderId, req.params.orderId)).limit(1))[0] ?? (order.riderId ? (await db.select().from(riderLocations).where(eq(riderLocations.riderId, order.riderId)).limit(1))[0] : undefined);
+    const location = (await db.select().from(riderLocations).where(eq(riderLocations.orderId, req.params.orderId)).limit(1))[0];
     return res.json({ ok: true, order, location: location ?? null });
   });
 };

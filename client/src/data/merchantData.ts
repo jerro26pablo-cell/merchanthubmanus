@@ -13,6 +13,7 @@ export type Listing = {
   title: string;
   description?: string;
   category: string;
+  subcategory?: string;
   type: ListingType;
   price: number;
   currentBid?: number;
@@ -21,6 +22,7 @@ export type Listing = {
   auctionEndAt?: string;
   reserveThreshold?: number;
   minimumIncrement?: number;
+  antiSnipeSeconds?: number;
   lifecycle?: "draft" | "official" | "deleted";
   ownerId?: number;
   bidders?: number;

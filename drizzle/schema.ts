@@ -53,6 +53,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   title: varchar("title", { length: 180 }).notNull(),
   description: text("description").notNull(),
   category: varchar("category", { length: 80 }).notNull(),
+  subcategory: varchar("subcategory", { length: 100 }),
   listingType: mysqlEnum("listingType", ["Auction", "Buy now", "Both"]).notNull(),
   priceCents: int("priceCents").notNull(),
   buyNowPriceCents: int("buyNowPriceCents"),
@@ -63,6 +64,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   auctionEndAt: timestamp("auctionEndAt"),
   reserveThresholdCents: int("reserveThresholdCents"),
   minimumIncrementCents: int("minimumIncrementCents"),
+  antiSnipeSeconds: int("antiSnipeSeconds").default(120),
   settledAt: timestamp("settledAt"),
   lifecycle: mysqlEnum("lifecycle", ["draft", "official", "deleted"]).default("draft").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -169,6 +171,17 @@ export const savedSearches = mysqlTable("savedSearches", {
   query: varchar("query", { length: 255 }).notNull().default(""),
   filter: varchar("filter", { length: 80 }).notNull().default("All items"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const bidCancellationRequests = mysqlTable("bid_cancellation_requests", {
+  id: int("id").autoincrement().primaryKey(),
+  bidId: int("bidId").notNull(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  userId: int("userId").notNull(),
+  reason: varchar("reason", { length: 500 }).notNull(),
+  status: mysqlEnum("status", ["pending", "approved", "denied"]).default("pending").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type PaymentOrder = typeof paymentOrders.$inferSelect;

@@ -304,3 +304,4 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .status-badge.losing, .status-badge.lost { color: #c85343; }
 .status-badge.won { color: #9a741b; }
 @media (max-width: 760px) { .bid-history-card { grid-template-columns: 1fr; gap: 8px; } }
+.gallery-touch-area { touch-action: pan-y; }

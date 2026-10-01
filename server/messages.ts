@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { and, eq, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { listingsOwned, messages, users, wishlists } from "../drizzle/schema";
+import { listingsOwned, messages, notifications, users, wishlists } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => { const user = await getAppUser(req); if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; } return user; };
@@ -19,7 +19,12 @@ export const registerMessageRoutes = (app: Express) => {
   app.post("/api/messages/:messageId/read", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    await db.update(messages).set({ readAt: new Date() }).where(and(eq(messages.id, Number(req.params.messageId)), eq(messages.recipientId, user.id)));
+    const message = (await db.select().from(messages).where(and(eq(messages.id, Number(req.params.messageId)), eq(messages.recipientId, user.id))).limit(1))[0];
+    if (message) {
+      const readAt = new Date();
+      await db.update(messages).set({ readAt }).where(eq(messages.id, message.id));
+      if (message.listingId) await db.update(notifications).set({ readAt }).where(and(eq(notifications.recipientId, user.id), eq(notifications.type, "system"), eq(notifications.title, "New message"), eq(notifications.entityId, message.listingId)));
+    }
     return res.json({ ok: true });
   });
   app.post("/api/messages", async (req, res) => {

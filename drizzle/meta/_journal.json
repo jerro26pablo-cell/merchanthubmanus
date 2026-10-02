@@ -13,6 +13,7 @@
     { "idx": 8, "version": "5", "when": 1790765000000, "tag": "0008_messages_and_wishlists", "breakpoints": true },
     { "idx": 9, "version": "5", "when": 1790766000000, "tag": "0009_both_listing_buy_now_price", "breakpoints": true },
     { "idx": 10, "version": "5", "when": 1790767000000, "tag": "0010_saved_searches", "breakpoints": true },
-    { "idx": 11, "version": "5", "when": 1790768000000, "tag": "0011_marketplace_depth", "breakpoints": true }
+    { "idx": 11, "version": "5", "when": 1790768000000, "tag": "0011_marketplace_depth", "breakpoints": true },
+    { "idx": 12, "version": "5", "when": 1790918657548, "tag": "0012_auction_lifecycle", "breakpoints": true }
   ]
 }

@@ -6,7 +6,8 @@ export type OrderStatus =
   | "Picked up"
   | "In transit"
   | "Delivered"
-  | "Disputed";
+  | "Disputed"
+  | "Cancelled";
 
 export type Listing = {
   id: string;
@@ -23,7 +24,9 @@ export type Listing = {
   reserveThreshold?: number;
   minimumIncrement?: number;
   antiSnipeSeconds?: number;
-  lifecycle?: "draft" | "official" | "deleted";
+  lifecycle?: "draft" | "official" | "auction-ended" | "sold" | "deleted";
+  secondChancePending?: boolean;
+  settledAt?: string;
   ownerId?: number;
   bidders?: number;
   timeLeft?: string;

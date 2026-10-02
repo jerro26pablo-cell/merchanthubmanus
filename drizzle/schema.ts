@@ -39,7 +39,7 @@ export const proxyBids = mysqlTable("proxy_bids", {
   maxBidCents: int("maxBidCents").notNull(),
   incrementCents: int("incrementCents").notNull(),
   currentBidCents: int("currentBidCents").notNull(),
-  status: mysqlEnum("status", ["active", "won", "outbid", "cancelled"]).default("active").notNull(),
+  status: mysqlEnum("status", ["active", "won", "outbid", "offered", "cancelled"]).default("active").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -66,7 +66,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   minimumIncrementCents: int("minimumIncrementCents"),
   antiSnipeSeconds: int("antiSnipeSeconds").default(120),
   settledAt: timestamp("settledAt"),
-  lifecycle: mysqlEnum("lifecycle", ["draft", "official", "deleted"]).default("draft").notNull(),
+  lifecycle: mysqlEnum("lifecycle", ["draft", "official", "auction-ended", "sold", "deleted"]).default("draft").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

@@ -31,7 +31,7 @@ export const registerLogisticsRoutes = (app: Express) => {
   app.get("/api/orders/active", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), and(eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit"))))) : user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
+    const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), eq(commerceOrders.riderId, user.id))) : user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
     const orders = await Promise.all(rows.map(async (row) => { const buyer = (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, row.sellerId)).limit(1))[0]; return { ...row, buyerName: buyer?.name || buyer?.email || "Buyer", sellerName: seller?.storeName || seller?.name || seller?.email || "Seller" }; }));
     return res.json({ ok: true, orders });
   });
@@ -47,10 +47,27 @@ export const registerLogisticsRoutes = (app: Express) => {
     const user = await auth(req, res); if (!user) return;
     if (user.role !== "rider") return res.status(403).json({ ok: false, error: "Only the rider account can accept deliveries." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    await db.update(commerceOrders).set({ riderId: user.id, status: "Rider assigned" }).where(and(eq(commerceOrders.orderId, req.params.orderId), eq(commerceOrders.status, "Processing")));
+    const claimed = await db.update(commerceOrders).set({ riderId: user.id, status: "Rider assigned" }).where(and(eq(commerceOrders.orderId, req.params.orderId), eq(commerceOrders.status, "Processing")));
+    if (claimed[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "Another rider already accepted this order, or it is no longer available." });
     const row = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
-    if (row) await createNotification(row.buyerId, "delivery_update", "Rider accepted your delivery", `Your order ${row.orderId} was accepted by the rider.`, row.orderId);
+    if (row) {
+      await createNotification(row.buyerId, "delivery_update", "Rider accepted your delivery", `Your order ${row.orderId} was accepted by the rider.`, row.orderId);
+      await createNotification(row.sellerId, "delivery_update", "Rider assigned", `A rider accepted pickup for order ${row.orderId}.`, row.orderId);
+    }
     return res.json({ ok: true, order: row ?? null });
+  });
+  app.post("/api/orders/:orderId/cancel-pickup", async (req, res) => {
+    const user = await auth(req, res); if (!user) return;
+    if (user.role !== "rider") return res.status(403).json({ ok: false, error: "Only the assigned rider can cancel a pickup assignment." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const current = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
+    if (!current) return res.status(404).json({ ok: false, error: "Order not found." });
+    if (current.riderId !== user.id || current.status !== "Rider assigned") return res.status(409).json({ ok: false, error: "Pickup can only be cancelled by its assigned rider before the item is picked up." });
+    const released = await db.update(commerceOrders).set({ riderId: null, status: "Processing" }).where(and(eq(commerceOrders.orderId, current.orderId), eq(commerceOrders.riderId, user.id), eq(commerceOrders.status, "Rider assigned")));
+    if (released[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "This pickup assignment already changed. Refresh the queue." });
+    await createNotification(current.buyerId, "delivery_update", "Rider cancelled pickup", `The rider could not pick up order ${current.orderId}. Your order is back in the queue for another rider.`, current.orderId);
+    await createNotification(current.sellerId, "delivery_update", "Pickup released to rider queue", `The assigned rider cancelled pickup for order ${current.orderId}; another rider can accept it.`, current.orderId);
+    return res.json({ ok: true, orderId: current.orderId, status: "Processing" });
   });
   app.post("/api/orders/:orderId/status", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
@@ -61,7 +78,10 @@ export const registerLogisticsRoutes = (app: Express) => {
     const current = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!current) return res.status(404).json({ ok: false, error: "Order not found." });
     if (user.role === "rider" && current.riderId !== user.id) return res.status(403).json({ ok: false, error: "This delivery is not assigned to you." });
-    await db.update(commerceOrders).set({ status: nextStatus }).where(eq(commerceOrders.orderId, req.params.orderId));
+    const allowed: Record<string, string[]> = { "Rider assigned": ["Picked up"], "Picked up": ["In transit"], "In transit": ["Delivered"] };
+    if (user.role === "rider" && !allowed[current.status]?.includes(nextStatus)) return res.status(409).json({ ok: false, error: `A rider cannot move an order from ${current.status} to ${nextStatus}.` });
+    const changed = await db.update(commerceOrders).set({ status: nextStatus }).where(and(eq(commerceOrders.orderId, req.params.orderId), eq(commerceOrders.status, current.status), user.role === "rider" ? eq(commerceOrders.riderId, user.id) : eq(commerceOrders.orderId, req.params.orderId)));
+    if (changed[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "The delivery changed before this update. Refresh the queue." });
     await createNotification(current.buyerId, "delivery_update", `Delivery ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
     if (current.sellerId) await createNotification(current.sellerId, "delivery_update", `Order ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
     return res.json({ ok: true, status: nextStatus });

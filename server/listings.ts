@@ -3,7 +3,7 @@ import { and, eq, ne, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
 import { commerceOrders, listingsOwned, proxyBids, users, wishlists } from "../drizzle/schema";
-import { createNotification } from "./notifications";
+import { createNotification, settleExpiredAuctions } from "./notifications";
 import { notifySavedSearchMatches } from "./savedSearches";
 
 const requireUser = async (req: Request, res: Response) => {
@@ -14,7 +14,7 @@ const requireUser = async (req: Request, res: Response) => {
 const toListing = (row: typeof listingsOwned.$inferSelect, seller = "") => {
   let photos: string[] = [];
   if (row.imageData) { try { const parsed = JSON.parse(row.imageData); photos = Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [row.imageData]; } catch { photos = [row.imageData]; } }
-  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, lifecycle: row.lifecycle, ownerId: row.ownerId };
+  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, lifecycle: row.lifecycle, settledAt: row.settledAt?.toISOString(), ownerId: row.ownerId };
 };
 export const registerListingRoutes = (app: Express) => {
   app.get("/api/metrics/overview", async (req, res) => {
@@ -22,10 +22,11 @@ export const registerListingRoutes = (app: Express) => {
     if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
     const ownerFilter = user.role === "admin" ? undefined : user.id;
     const listingRows = await db.select({ id: listingsOwned.listingId, stock: listingsOwned.stock, type: listingsOwned.listingType, end: listingsOwned.auctionEndAt }).from(listingsOwned).where(ownerFilter ? and(eq(listingsOwned.ownerId, ownerFilter), eq(listingsOwned.lifecycle, "official")) : eq(listingsOwned.lifecycle, "official"));
     const orderRows = user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
-    const liveAuctions = listingRows.filter((row) => (row.type === "Auction" || row.type === "Both") && (!row.end || row.end.getTime() > Date.now())).length;
+    const liveAuctions = listingRows.filter((row) => row.stock > 0 && (row.type === "Auction" || row.type === "Both") && (!row.end || row.end.getTime() > Date.now())).length;
     const transitStatuses = new Set(["Processing", "Rider assigned", "Picked up", "In transit"]);
     const inTransit = orderRows.filter((row) => transitStatuses.has(row.status)).length;
     const grossSalesCents = orderRows.filter((row) => row.status !== "Cancelled" && (user.role === "admin" || row.sellerId === user.id)).reduce((sum, row) => sum + row.amountCents, 0);
@@ -39,12 +40,15 @@ export const registerListingRoutes = (app: Express) => {
     const user = await getAppUser(req);
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
     const ownerOnly = req.query.owner === "me";
+    if (ownerOnly && !user) return res.status(401).json({ ok: false, error: "Please log in." });
     const ownerRows = ownerOnly && user ? await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id)) : await db.select().from(listingsOwned).where(eq(listingsOwned.lifecycle, "official"));
     const rows = ownerOnly ? ownerRows : ownerRows.filter((row) => !(row.listingType === "Auction" || row.listingType === "Both") || !row.auctionEndAt || row.auctionEndAt.getTime() > Date.now());
     const owners = await db.select({ id: users.id, name: users.name, storeName: users.storeName }).from(users);
     const ownerMap = new Map(owners.map((owner) => [owner.id, owner.storeName || owner.name || "MerchantHub seller"]));
-    return res.json({ ok: true, listings: rows.map((row) => toListing(row, ownerMap.get(row.ownerId) || "MerchantHub seller")) });
+    const pendingOffers = new Set((await db.select({ listingId: proxyBids.listingId }).from(proxyBids).where(eq(proxyBids.status, "offered"))).map((row) => row.listingId));
+    return res.json({ ok: true, listings: rows.map((row) => ({ ...toListing(row, ownerMap.get(row.ownerId) || "MerchantHub seller"), secondChancePending: pendingOffers.has(row.listingId) })) });
   });
   app.post("/api/listings", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
@@ -78,6 +82,9 @@ export const registerListingRoutes = (app: Express) => {
     if (!row) return res.status(404).json({ ok: false, error: "Listing not found or you do not own it." });
     const nextLifecycle = req.body?.lifecycle;
     if (nextLifecycle && !["draft", "official"].includes(nextLifecycle)) return res.status(400).json({ ok: false, error: "Invalid listing state." });
+    const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
+    if (pendingOffer && (req.body?.stock !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
+    if (nextLifecycle === "official" && ["auction-ended", "sold"].includes(row.lifecycle) && (row.listingType === "Auction" || row.listingType === "Both")) return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
     for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "auctionEndAt", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock", "priceCents", "buyNowPriceCents"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
     if (Array.isArray(req.body?.photos)) updates.imageData = JSON.stringify(req.body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5));
@@ -106,10 +113,29 @@ export const registerListingRoutes = (app: Express) => {
     const created = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name) : null });
   });
-  app.post("/api/listings/:listingId/re-auction", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const listing = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0]; if (!listing || (listing.listingType !== "Auction" && listing.listingType !== "Both")) return res.status(404).json({ ok: false, error: "Auction listing not found." }); const end = new Date(Date.now() + 24 * 60 * 60 * 1000); await db.update(listingsOwned).set({ lifecycle: "official", auctionEndAt: end, settledAt: null }).where(eq(listingsOwned.listingId, listing.listingId)); await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.listingId, listing.listingId)); const refreshed = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listing.listingId)).limit(1))[0]; return res.json({ ok: true, listing: refreshed ? toListing(refreshed, user.storeName || user.name) : null }); });
+  app.post("/api/listings/:listingId/re-auction", async (req, res) => {
+    const user = await requireUser(req, res); if (!user) return;
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const listing = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
+    if (!listing || (listing.listingType !== "Auction" && listing.listingType !== "Both")) return res.status(404).json({ ok: false, error: "Auction listing not found." });
+    if (listing.lifecycle !== "auction-ended") return res.status(409).json({ ok: false, error: "Only an ended auction without a sale can be re-auctioned." });
+    if (listing.stock <= 0) return res.status(409).json({ ok: false, error: "Add stock before re-auctioning this item." });
+    const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
+    if (pendingOffer) return res.status(409).json({ ok: false, error: "Wait for the second-highest bidder to accept or decline before re-auctioning." });
+    const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const updated = await db.update(listingsOwned).set({ lifecycle: "official", auctionEndAt: end, settledAt: null }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "auction-ended")));
+    if (updated[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "This auction changed before it could be re-auctioned. Refresh Inventory and try again." });
+    await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
+    const refreshed = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listing.listingId)).limit(1))[0];
+    return res.json({ ok: true, listing: refreshed ? toListing(refreshed, user.storeName || user.name) : null });
+  });
   app.delete("/api/listings/:listingId", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const listing = (await db.select({ listingId: listingsOwned.listingId }).from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
+    if (!listing) return res.status(404).json({ ok: false, error: "Listing not found or you do not own it." });
+    const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
+    if (pendingOffer) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before deleting this item." });
     const result = await db.update(listingsOwned).set({ lifecycle: "deleted" }).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id)));
     return res.json({ ok: true, deleted: result[0]?.affectedRows !== 0 });
   });

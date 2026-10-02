@@ -39,6 +39,7 @@ export const proxyBids = mysqlTable("proxy_bids", {
   maxBidCents: int("maxBidCents").notNull(),
   incrementCents: int("incrementCents").notNull(),
   currentBidCents: int("currentBidCents").notNull(),
+  isAutomatic: int("isAutomatic").default(0).notNull(),
   status: mysqlEnum("status", ["active", "won", "outbid", "offered", "cancelled"]).default("active").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

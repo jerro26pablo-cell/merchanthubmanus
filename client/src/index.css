@@ -431,3 +431,15 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 @media (max-width: 560px) {
   .inventory-auction-deadline { grid-template-columns: 1fr; }
 }
+
+
+/* Live buyer standing and capped proxy bidding */
+.bidder-live-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0; padding: 12px; border: 1px solid #e8eeec; border-radius: 12px; background: #f8faf9; }
+.bidder-live-status > div { display: grid; gap: 5px; min-width: 0; }
+.bidder-live-status span { color: #71807d; font-size: 11px; }
+.bidder-live-status strong { color: #253b38; font-size: 14px; overflow-wrap: anywhere; }
+.bidder-live-status.winning { border-color: #b6e4d7; background: #eff9f5; }
+.bidder-live-status.winning > div:first-child strong { color: #147864; }
+.bidder-live-status.outbid { border-color: #f1d4cd; background: #fff7f4; }
+.bidder-live-status.outbid > div:first-child strong { color: #b84b3b; }
+@media (max-width: 640px) { .bidder-live-status { grid-template-columns: 1fr 1fr; } .bidder-live-status > div:first-child { grid-column: 1 / -1; } }

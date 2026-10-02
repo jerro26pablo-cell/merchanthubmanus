@@ -14,6 +14,8 @@ function Router() {
       <Route path="/auctions" component={Home} />
       <Route path="/auction/:id" component={Home} />
       <Route path="/item/:id" component={Home} />
+      <Route path="/compare/:baseId/:candidateId" component={Home} />
+      <Route path="/compare/:baseId" component={Home} />
       <Route path="/checkout/:id" component={Home} />
       <Route path="/order/:id" component={Home} />
       <Route path="/orders" component={Home} />

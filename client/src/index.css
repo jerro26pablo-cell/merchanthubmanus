@@ -443,3 +443,32 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .bidder-live-status.outbid { border-color: #f1d4cd; background: #fff7f4; }
 .bidder-live-status.outbid > div:first-child strong { color: #b84b3b; }
 @media (max-width: 640px) { .bidder-live-status { grid-template-columns: 1fr 1fr; } .bidder-live-status > div:first-child { grid-column: 1 / -1; } }
+
+
+/* Buyer bid history grouped by auction item */
+.buyer-bid-groups { display: grid; gap: 12px; }
+.buyer-bid-group { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--paper); }
+.buyer-bid-group-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
+.buyer-bid-group-toggle { min-width: 0; flex: 1; display: grid; grid-template-columns: minmax(170px, 1fr) auto auto auto; align-items: center; gap: 16px; border: 0; background: transparent; text-align: left; color: inherit; cursor: pointer; }
+.buyer-bid-group-title, .buyer-bid-group-cap { display: grid; gap: 4px; min-width: 0; }
+.buyer-bid-group-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.buyer-bid-group-title small, .buyer-bid-group-cap small, .buyer-bid-event-main span, .buyer-bid-event-cap span { color: var(--muted-dark); font-size: 12px; }
+.buyer-bid-group-cap { text-align: right; }
+.buyer-bid-chevron { transition: transform .18s ease; }
+.buyer-bid-chevron.open { transform: rotate(180deg); }
+.buyer-open-detail { white-space: nowrap; }
+.buyer-bid-group-content { padding: 0 14px 14px; border-top: 1px solid var(--line); }
+.buyer-bid-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 2px; }
+.buyer-bid-history-heading span { color: var(--muted-dark); font-size: 12px; }
+.buyer-bid-event-row { display: grid; grid-template-columns: minmax(150px, 1fr) auto auto auto; align-items: center; gap: 12px; padding: 11px 10px; border-top: 1px solid var(--line); }
+.buyer-bid-event-main, .buyer-bid-event-cap { display: grid; gap: 4px; }
+.buyer-bid-event-cap { text-align: right; }
+@media (max-width: 700px) {
+  .buyer-bid-group-head { align-items: flex-start; flex-wrap: wrap; }
+  .buyer-bid-group-toggle { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .buyer-bid-group-toggle .status-badge { grid-column: 1; justify-self: start; }
+  .buyer-bid-group-toggle .buyer-bid-chevron { grid-column: 2; grid-row: 1; }
+  .buyer-open-detail { margin-left: auto; }
+  .buyer-bid-event-row { grid-template-columns: 1fr auto; }
+  .buyer-bid-event-row .status-badge { grid-column: 1; justify-self: start; }
+}

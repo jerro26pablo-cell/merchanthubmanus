@@ -33,19 +33,30 @@ export function resolveExpiredAuctionOutcome(
   return { kind: "sold", winner: leadingBid };
 }
 
-/** Pick each bidder's most recent eligible proxy, retaining outbid caps for future automatic responses. */
+/** Pick each bidder's latest eligible cap, retaining old caps and first-to-cap priority. */
 export function rankCurrentProxyBids(bids: AuctionBidState[]): AuctionBidState[] {
-  const newestFirst = [...bids].sort((a, b) => {
-    const timeDelta = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    return timeDelta || b.id - a.id;
+  const chronological = [...bids].sort((a, b) => {
+    const timeDelta = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    return timeDelta || a.id - b.id;
   });
   const latestByUser = new Map<number, AuctionBidState>();
-  for (const bid of newestFirst) {
-    if (!latestByUser.has(bid.userId)) latestByUser.set(bid.userId, bid);
+  const currentCapByUser = new Map<number, number>();
+  const capPriorityByUser = new Map<number, number>();
+  for (const bid of chronological) {
+    latestByUser.set(bid.userId, bid);
+    if (bid.status === "cancelled" || bid.status === "won") {
+      currentCapByUser.delete(bid.userId);
+      capPriorityByUser.delete(bid.userId);
+      continue;
+    }
+    if (currentCapByUser.get(bid.userId) !== bid.maxBidCents) {
+      currentCapByUser.set(bid.userId, bid.maxBidCents);
+      capPriorityByUser.set(bid.userId, bid.id);
+    }
   }
   return [...latestByUser.values()]
     .filter((bid) => bid.status === "active" || bid.status === "outbid")
-    .sort((a, b) => b.maxBidCents - a.maxBidCents || a.id - b.id);
+    .sort((a, b) => b.maxBidCents - a.maxBidCents || (capPriorityByUser.get(a.userId) ?? a.id) - (capPriorityByUser.get(b.userId) ?? b.id));
 }
 
 /** Determine the price reached by proxy bidding, bounded by the leading bidder's cap. */
@@ -56,7 +67,7 @@ export function calculateProxyWinningBidCents(
   openingBidCents: number,
   sellerMinimumIncrementCents: number,
 ): number {
-  const increment = Math.max(sellerMinimumIncrementCents, leader.incrementCents ?? sellerMinimumIncrementCents);
+  const increment = Math.max(100, leader.incrementCents ?? sellerMinimumIncrementCents);
   const runnerUpPrice = runnerUp ? runnerUp.maxBidCents + increment : openingBidCents;
   return Math.min(leader.maxBidCents, Math.max(openingBidCents, submittedBidCents, runnerUpPrice));
 }
@@ -75,22 +86,12 @@ export function selectAuctionSummaryBid(bids: AuctionBidState[]): AuctionBidStat
   return [...bids].sort((a, b) => priority(a.status) - priority(b.status) || b.currentBidCents - a.currentBidCents || b.maxBidCents - a.maxBidCents || a.id - b.id).find((bid) => ["won", "active", "offered"].includes(bid.status)) ?? null;
 }
 
-/** Pick the next eligible bidder by latest per-user bid, then highest proxy cap. */
+/** Pick the next eligible bidder by latest per-user cap, preserving first-to-cap ties. */
 export function selectSecondChanceBid(
   bids: AuctionBidState[],
   cancelledWinnerUserId: number,
 ): AuctionBidState | null {
-  const newestFirst = [...bids].sort((a, b) => {
-    const timeDelta = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    return timeDelta || b.id - a.id;
-  });
-  const latestByUser = new Map<number, AuctionBidState>();
-  for (const bid of newestFirst) {
-    if (!latestByUser.has(bid.userId)) latestByUser.set(bid.userId, bid);
-  }
-  return [...latestByUser.values()]
-    .filter((bid) => bid.userId !== cancelledWinnerUserId && bid.status === "outbid")
-    .sort((a, b) => b.maxBidCents - a.maxBidCents || a.id - b.id)[0] ?? null;
+  return rankCurrentProxyBids(bids).find((bid) => bid.userId !== cancelledWinnerUserId && bid.status === "outbid") ?? null;
 }
 
 export function secondChanceTransition(action: "accept" | "decline") {

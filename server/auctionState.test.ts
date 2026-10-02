@@ -50,6 +50,15 @@ describe("auction lifecycle rules", () => {
     expect(selectSecondChanceBid(rows, 101)?.userId).toBe(303);
   });
 
+  it("uses first-to-cap priority for equal second-chance offers", () => {
+    const rows = [
+      bid(1, 101, "cancelled", 20000, 0, "2026-10-01T10:00:00Z"),
+      bid(2, 202, "outbid", 15000, 0, "2026-10-01T10:01:00Z"),
+      bid(3, 303, "outbid", 15000, 0, "2026-10-01T10:02:00Z"),
+    ];
+    expect(selectSecondChanceBid(rows, 101)?.userId).toBe(202);
+  });
+
   it("never promotes an outbid record to a false seller-side winner", () => {
     const outbidRows = [bid(2, 202, "outbid", 15000, 0, "2026-10-01T10:01:00Z"), bid(3, 303, "cancelled", 12000, 0, "2026-10-01T10:02:00Z")];
     expect(selectAuctionSummaryBid(outbidRows)).toBeNull();
@@ -87,10 +96,39 @@ describe("automatic proxy bidding", () => {
     expect(ranked.map((row) => [row.userId, row.maxBidCents])).toEqual([[202, 15000], [101, 9000]]);
   });
 
-  it("automatically raises to the competing proxy price but never above the leader’s cap", () => {
-    const leader = bid(1, 101, "active", 10000, 7000, "2026-10-02T10:00:00Z", 500);
-    const runner = bid(2, 202, "outbid", 9500, 0, "2026-10-02T10:01:00Z");
-    expect(calculateProxyWinningBidCents(leader, runner, 7100, 5000, 100)).toBe(10000);
+  it("automatically raises by the bidder's chosen increment, not the seller floor", () => {
+    const leader = bid(1, 101, "active", 100000, 70000, "2026-10-02T10:00:00Z", 1000);
+    const runner = bid(2, 202, "outbid", 50000, 0, "2026-10-02T10:01:00Z");
+    expect(calculateProxyWinningBidCents(leader, runner, 20000, 5000, 10000)).toBe(51000);
+  });
+
+  it("keeps first-to-cap priority when a bidder repeats the same cap", () => {
+    const ranked = rankCurrentProxyBids([
+      bid(1, 101, "outbid", 60000, 0, "2026-10-02T10:00:00Z"),
+      bid(2, 202, "outbid", 60000, 0, "2026-10-02T10:01:00Z"),
+      bid(3, 101, "active", 60000, 50000, "2026-10-02T10:02:00Z"),
+    ]);
+    expect(ranked[0].userId).toBe(101);
+  });
+
+  it("resets tie priority when a bidder lowers then later raises their cap again", () => {
+    const ranked = rankCurrentProxyBids([
+      bid(1, 101, "outbid", 60000, 0, "2026-10-02T10:00:00Z"),
+      bid(2, 101, "outbid", 50000, 0, "2026-10-02T10:01:00Z"),
+      bid(3, 202, "outbid", 60000, 0, "2026-10-02T10:02:00Z"),
+      bid(4, 101, "active", 60000, 50000, "2026-10-02T10:03:00Z"),
+    ]);
+    expect(ranked[0].userId).toBe(202);
+  });
+
+  it("does not carry first-to-cap priority across a cancelled bid", () => {
+    const ranked = rankCurrentProxyBids([
+      bid(1, 101, "outbid", 60000, 0, "2026-10-02T10:00:00Z"),
+      bid(2, 202, "outbid", 60000, 0, "2026-10-02T10:01:00Z"),
+      bid(3, 101, "cancelled", 60000, 0, "2026-10-02T10:02:00Z"),
+      bid(4, 101, "active", 60000, 50000, "2026-10-02T10:03:00Z"),
+    ]);
+    expect(ranked[0].userId).toBe(202);
   });
 });
 

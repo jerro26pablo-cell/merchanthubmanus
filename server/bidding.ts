@@ -23,7 +23,7 @@ export async function getBidHistoryForUser(userId: number) {
   const db = await getDb();
   if (!db) return [];
   await settleExpiredAuctions();
-  const rows = await db.select().from(proxyBids).where(eq(proxyBids.userId, userId)).orderBy(desc(proxyBids.createdAt)).limit(100);
+  const rows = await db.select().from(proxyBids).where(eq(proxyBids.userId, userId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id)).limit(100);
   const listingRows = await db.select().from(listingsOwned);
   const listingMap = new Map(listingRows.map((listing) => [listing.listingId, listing]));
   return rows.map((row) => {
@@ -45,7 +45,7 @@ export function registerBiddingRoutes(app: Express) {
     const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     const isSeller = user.role === "admin" || listing.ownerId === user.id;
-    const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.createdAt));
+    const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id));
     const aliases = createBidderLabels([...rows].sort((a, b) => a.id - b.id).map((row) => row.userId), user.id);
     const latestOwn = rows.find((row) => row.userId === user.id);
     const leader = rows.filter((row) => row.status === "active").sort((a, b) => b.currentBidCents - a.currentBidCents || a.id - b.id)[0];
@@ -100,7 +100,7 @@ export function registerBiddingRoutes(app: Express) {
     const sellerMinimumIncrement = Math.max(100, listing.minimumIncrementCents ?? 100);
     if (mode === "simple") { maxBidCents = initialBidCents; incrementCents = sellerMinimumIncrement; }
     if (maxBidCents > user.walletCents) return res.status(400).json({ ok: false, error: `Your max bid cannot exceed your e-wallet balance of ${pesos(user.walletCents)}.` });
-    if (incrementCents < sellerMinimumIncrement) return res.status(400).json({ ok: false, error: `Your increment must be at least the seller baseline of ${pesos(sellerMinimumIncrement)}.` });
+    if (mode === "simple" && incrementCents < sellerMinimumIncrement) return res.status(400).json({ ok: false, error: `Your bid must follow the seller minimum increment of ${pesos(sellerMinimumIncrement)}.` });
     const requiredBid = active.length ? currentBidCents + sellerMinimumIncrement : listing.priceCents;
     if (maxBidCents < requiredBid) { await createNotification(user.id, "system", "Proxy bid limit reached", `The next bid would be ${pesos(requiredBid)}, above your maximum of ${pesos(maxBidCents)}. Increase your maximum bid to continue.`, listingId); return res.status(409).json({ ok: false, error: `Your maximum bid is below the next increment of ${pesos(requiredBid)}.`, limitReached: true }); }
     if (maxBidCents < initialBidCents) return res.status(400).json({ ok: false, error: "Your maximum bid must be at least your opening bid." });
@@ -114,7 +114,7 @@ export function registerBiddingRoutes(app: Express) {
       await createNotification(listing.ownerId, "system", "Auction extended", `A last-second bid extended “${listing.title}” by ${antiSnipeSeconds} seconds.`, listingId);
     }
     await db.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "active")));
-    const [created] = await db.insert(proxyBids).values({ userId: user.id, listingId, maxBidCents, incrementCents: Math.max(incrementCents, sellerMinimumIncrement), currentBidCents: initialBidCents, isAutomatic: mode === "proxy" ? 1 : 0, status: "active" }).$returningId();
+    const [created] = await db.insert(proxyBids).values({ userId: user.id, listingId, maxBidCents, incrementCents, currentBidCents: initialBidCents, isAutomatic: mode === "proxy" ? 1 : 0, status: "active" }).$returningId();
     const allBids = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId));
     const proxies = rankCurrentProxyBids(allBids);
     const winner = proxies[0]; const runner = proxies[1];

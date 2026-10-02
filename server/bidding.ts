@@ -46,9 +46,11 @@ export function registerBiddingRoutes(app: Express) {
     if (!listingId || !Number.isFinite(initialBidCents) || initialBidCents <= 0 || (mode === "proxy" && (!Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100))) return res.status(400).json({ ok: false, error: mode === "simple" ? "Enter a valid bid amount." : "Listing, max bid, and an increment of at least ₱1 are required." });
     if (maxBidCents > user.walletCents) return res.status(400).json({ ok: false, error: `Your max bid cannot exceed your e-wallet balance of ${pesos(user.walletCents)}.` });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const listing = (await db.select({ ownerId: listingsOwned.ownerId, priceCents: listingsOwned.priceCents, auctionEndAt: listingsOwned.auctionEndAt, title: listingsOwned.title, minimumIncrementCents: listingsOwned.minimumIncrementCents, antiSnipeSeconds: listingsOwned.antiSnipeSeconds }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    const listing = (await db.select({ ownerId: listingsOwned.ownerId, listingType: listingsOwned.listingType, stock: listingsOwned.stock, priceCents: listingsOwned.priceCents, auctionEndAt: listingsOwned.auctionEndAt, title: listingsOwned.title, minimumIncrementCents: listingsOwned.minimumIncrementCents, antiSnipeSeconds: listingsOwned.antiSnipeSeconds }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot bid on your own listing." });
+    if (listing.listingType !== "Auction" && listing.listingType !== "Both") return res.status(409).json({ ok: false, error: "This listing is not available for auction bidding." });
+    if (listing.stock <= 0) return res.status(409).json({ ok: false, error: "This auction is out of stock and cannot accept bids." });
     if (listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
     const active = await activeForListing(db, listingId);
     const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), listing.priceCents);

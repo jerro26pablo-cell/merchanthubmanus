@@ -68,7 +68,7 @@ export const registerLogisticsRoutes = (app: Express) => {
   });
   app.post("/api/rider/location", async (req, res) => {
     const user = await auth(req, res); if (!user || user.role !== "rider") return res.status(403).json({ ok: false, error: "Rider access required." });
-    const latitude = String(req.body?.latitude ?? ""); const longitude = String(req.body?.longitude ?? ""); if (!latitude || !longitude) return res.status(400).json({ ok: false, error: "Coordinates are required." });
+    const rawLatitude = req.body?.latitude; const rawLongitude = req.body?.longitude; const latitudeValue = Number(rawLatitude); const longitudeValue = Number(rawLongitude); if (rawLatitude == null || rawLongitude == null || rawLatitude === "" || rawLongitude === "" || !Number.isFinite(latitudeValue) || !Number.isFinite(longitudeValue) || latitudeValue < -90 || latitudeValue > 90 || longitudeValue < -180 || longitudeValue > 180) return res.status(400).json({ ok: false, error: "Valid latitude and longitude are required." }); const latitude = String(latitudeValue); const longitude = String(longitudeValue);
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const requestedOrderId = req.body?.orderId ? String(req.body.orderId) : "";
     const active = requestedOrderId ? (await db.select().from(commerceOrders).where(and(eq(commerceOrders.orderId, requestedOrderId), eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit")))).limit(1))[0] : undefined;

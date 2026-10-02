@@ -344,3 +344,24 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .comparison-column dt { color: var(--muted, #77817d); font-size: 12px; }
 .comparison-column dd { margin: 0; text-align: right; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 @media (max-width: 640px) { .comparison-picker-grid { grid-template-columns: 1fr; } .comparison-product-image { height: 145px; } }
+
+
+/* Seller bid overview and live rider tracking */
+.seller-auction-filters { margin: 0 0 14px; flex-wrap: wrap; }
+.seller-auction-filters button { display: inline-flex; align-items: center; gap: 7px; }
+.seller-auction-filters button span { display: inline-grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; background: #f0eee8; color: #687471; font-size: 10px; }
+.seller-auction-filters button.active span { background: #d6ebe5; color: #167467; }
+.seller-auction-card { grid-template-columns: minmax(0, 1fr) minmax(180px, .48fr); }
+.seller-auction-card > div:nth-child(2) { display: grid; align-content: start; gap: 6px; }
+.seller-auction-card .button { margin-top: 8px; }
+.seller-auction-countdown { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; font-weight: 750; }
+.seller-auction-countdown.ongoing { color: #167467; }
+.seller-auction-countdown.ended { color: #a45b4c; }
+.location-chip.is-tracking { color: #167467; background: #e9f5f1; }
+.rider-map-wrap { position: relative; }
+.rider-map-center { position: absolute; z-index: 500; top: 12px; right: 12px; display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 1px solid #d8e0dc; border-radius: 9px; color: #214347; background: #fffefb; box-shadow: 0 2px 10px rgba(24,35,41,.12); font-size: 11px; font-weight: 700; }
+.rider-arrow-marker { border: 0; background: transparent; }
+.rider-arrow-marker span { color: #f36f5b; font-size: 30px; line-height: 32px; text-shadow: 0 1px 3px #fff; transform-origin: 50% 50%; }
+.buyer-pin-marker { border: 0; background: transparent; color: #227fbe; font-size: 22px; text-shadow: 0 1px 3px #fff; }
+.compass-enable { margin-top: 12px; }
+@media (max-width: 760px) { .seller-auction-card { grid-template-columns: 1fr; } }

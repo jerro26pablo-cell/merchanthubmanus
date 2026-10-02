@@ -141,7 +141,7 @@ export function registerBiddingRoutes(app: Express) {
     if (changed[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "This offer has already been answered." });
     await db.update(listingsOwned).set({ lifecycle: transition.listingLifecycle, stock: Math.max(0, listing.stock - 1) }).where(and(eq(listingsOwned.listingId, listingId), eq(listingsOwned.lifecycle, "auction-ended")));
     await createNotification(listing.ownerId, "auction_won", "Second-chance offer accepted", `The next-highest bidder accepted “${listing.title}” at ${pesos(runner.currentBidCents || runner.maxBidCents)}.`, listingId);
-    await createNotification(user.id, "auction_won", "Second-chance offer accepted", `You accepted “${listing.title}” at ${pesos(runner.currentBidCents || runner.maxBidCents)}.`, listingId);
+    await createNotification(user.id, "auction_won", "You are the winner of this item", `You accepted “${listing.title}” at ${pesos(runner.currentBidCents || runner.maxBidCents)}. Open your auction detail to review the item, seller, and winning amount.`, listingId);
     return res.json({ ok: true, listingId, status: "won" });
   });
   app.post("/api/bids/second-chance/decline", async (req, res) => {

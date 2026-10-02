@@ -64,7 +64,7 @@ export async function settleExpiredAuctions() {
         eq(proxyBids.status, "active"),
       ));
       if (!wasAlreadySettled) {
-        await createNotification(winner.userId, "auction_won", "Auction won", `You won “${listing.title}” at ${pesos(winner.currentBidCents)}.`, listing.listingId);
+        await createNotification(winner.userId, "auction_won", "You are the winner of this item", `You won “${listing.title}” at ${pesos(winner.currentBidCents)}. Open your auction detail to review the item, seller, and winning amount.`, listing.listingId);
       }
       if (!wasAlreadySettled && correctedNoSale?.[0]?.affectedRows === 0) await createNotification(listing.ownerId, "auction_won", "Auction ended with a winner", `“${listing.title}” was won by the highest eligible bidder at ${pesos(winner.currentBidCents)}.`, listing.listingId);
       for (const bidder of bids.filter((bid) => bid.id !== winner.id && bid.status === "active")) {

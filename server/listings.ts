@@ -43,12 +43,34 @@ export const registerListingRoutes = (app: Express) => {
     await settleExpiredAuctions();
     const ownerOnly = req.query.owner === "me";
     if (ownerOnly && !user) return res.status(401).json({ ok: false, error: "Please log in." });
-    const ownerRows = ownerOnly && user ? await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id)) : await db.select().from(listingsOwned).where(eq(listingsOwned.lifecycle, "official"));
-    const rows = ownerOnly ? ownerRows : ownerRows.filter((row) => !(row.listingType === "Auction" || row.listingType === "Both") || !row.auctionEndAt || row.auctionEndAt.getTime() > Date.now());
+    let ownerRows = ownerOnly && user ? await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id)) : await db.select().from(listingsOwned).where(eq(listingsOwned.lifecycle, "official"));
+    if (ownerOnly && user) {
+      for (const row of ownerRows.filter((item) => item.lifecycle === "official" && item.stock <= 0)) {
+        const activeBid = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "active"))).limit(1))[0];
+        if (!activeBid) await db.update(listingsOwned).set({ lifecycle: "draft" }).where(and(eq(listingsOwned.listingId, row.listingId), eq(listingsOwned.lifecycle, "official")));
+      }
+      ownerRows = await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id));
+    }
+    const rows = ownerOnly ? ownerRows : ownerRows.filter((row) => row.stock > 0 && (!(row.listingType === "Auction" || row.listingType === "Both") || !row.auctionEndAt || row.auctionEndAt.getTime() > Date.now()));
     const owners = await db.select({ id: users.id, name: users.name, storeName: users.storeName }).from(users);
     const ownerMap = new Map(owners.map((owner) => [owner.id, owner.storeName || owner.name || "MerchantHub seller"]));
     const pendingOffers = new Set((await db.select({ listingId: proxyBids.listingId }).from(proxyBids).where(eq(proxyBids.status, "offered"))).map((row) => row.listingId));
     return res.json({ ok: true, listings: rows.map((row) => ({ ...toListing(row, ownerMap.get(row.ownerId) || "MerchantHub seller"), secondChancePending: pendingOffers.has(row.listingId) })) });
+  });
+  app.get("/api/listings/:listingId", async (req, res) => {
+    const user = await getAppUser(req);
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
+    const row = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, req.params.listingId)).limit(1))[0];
+    if (!row || row.lifecycle === "deleted") return res.status(404).json({ ok: false, error: "Listing not found." });
+    const isOwner = Boolean(user && (user.role === "admin" || user.id === row.ownerId));
+    const hasBid = Boolean(user && (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.userId, user.id))).limit(1))[0]);
+    const isPublic = row.lifecycle === "official" && row.stock > 0;
+    if (!isOwner && !hasBid && !isPublic) return res.status(404).json({ ok: false, error: "Listing not found." });
+    const seller = (await db.select({ name: users.name, storeName: users.storeName }).from(users).where(eq(users.id, row.ownerId)).limit(1))[0];
+    const pendingOffer = Boolean(user && (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).limit(1))[0]);
+    return res.json({ ok: true, listing: { ...toListing(row, seller?.storeName || seller?.name || "MerchantHub seller"), secondChancePending: pendingOffer } });
   });
   app.post("/api/listings", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
@@ -85,10 +107,20 @@ export const registerListingRoutes = (app: Express) => {
     const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
     if (pendingOffer && (req.body?.stock !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
     if (nextLifecycle === "official" && ["auction-ended", "sold"].includes(row.lifecycle) && (row.listingType === "Auction" || row.listingType === "Both")) return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
+    const nextStock = req.body?.stock === undefined ? row.stock : Math.round(Number(req.body.stock));
+    if (nextLifecycle === "official" && nextStock <= 0) return res.status(409).json({ ok: false, error: "Add available stock before making this listing official." });
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
     for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "auctionEndAt", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock", "priceCents", "buyNowPriceCents"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
     if (Array.isArray(req.body?.photos)) updates.imageData = JSON.stringify(req.body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5));
     if (nextLifecycle) updates.lifecycle = nextLifecycle;
+    if (req.body?.stock !== undefined && nextStock <= 0 && row.lifecycle === "official") {
+      const activeBid = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "active"))).limit(1))[0];
+      if (!activeBid) updates.lifecycle = "draft";
+    }
+    if (nextLifecycle === "official" && (row.listingType === "Auction" || row.listingType === "Both") && (!row.auctionEndAt || row.auctionEndAt.getTime() <= Date.now())) {
+      updates.auctionEndAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      updates.settledAt = null;
+    }
     await db.update(listingsOwned).set(updates).where(eq(listingsOwned.listingId, req.params.listingId));
     const updated = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, req.params.listingId)).limit(1))[0];
     if (updated && (updates.priceCents !== undefined || updates.stock !== undefined)) {

@@ -19,7 +19,8 @@ export const registerLogisticsRoutes = (app: Express) => {
     const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing || listing.lifecycle !== "official") return res.status(404).json({ ok: false, error: "This listing is no longer available." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot buy your own listing." });
-    const requestedQuantity = Math.max(1, Math.round(Number(body.quantity) || 1));
+    const requestedQuantity = Math.round(Number(body.quantity));
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ ok: false, error: "Choose at least one item." });
     if (requestedQuantity > listing.stock) return res.status(409).json({ ok: false, error: `Only ${listing.stock} item(s) remain in stock.` });
     const orderId = `MH-${Date.now().toString().slice(-6)}`;
     await db.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, amountCents: Math.max(0, Math.round(Number(body.amountCents) || 0)), payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
@@ -31,7 +32,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), and(eq(commerceOrders.riderId, user.id), or(eq(commerceOrders.status, "Rider assigned"), eq(commerceOrders.status, "Picked up"), eq(commerceOrders.status, "In transit"))))) : user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
-    const orders = await Promise.all(rows.map(async (row) => { const buyer = (await db.select({ name: users.name }).from(users).where(eq(users.id, row.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, storeName: users.storeName }).from(users).where(eq(users.id, row.sellerId)).limit(1))[0]; return { ...row, buyerName: buyer?.name ?? `Buyer ${row.buyerId}`, sellerName: seller?.storeName || seller?.name || `Seller ${row.sellerId}` }; }));
+    const orders = await Promise.all(rows.map(async (row) => { const buyer = (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, row.sellerId)).limit(1))[0]; return { ...row, buyerName: buyer?.name || buyer?.email || "Buyer", sellerName: seller?.storeName || seller?.name || seller?.email || "Seller" }; }));
     return res.json({ ok: true, orders });
   });
   app.get("/api/orders/:orderId", async (req, res) => {
@@ -39,8 +40,8 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const order = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!order || (user.role !== "admin" && user.id !== order.buyerId && user.id !== order.sellerId && user.id !== order.riderId)) return res.status(404).json({ ok: false, error: "Order not found." });
-    const buyer = (await db.select({ name: users.name }).from(users).where(eq(users.id, order.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, storeName: users.storeName }).from(users).where(eq(users.id, order.sellerId)).limit(1))[0];
-    return res.json({ ok: true, order: { ...order, buyerName: buyer?.name ?? `Buyer ${order.buyerId}`, sellerName: seller?.storeName || seller?.name || `Seller ${order.sellerId}` } });
+    const buyer = (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, order.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, order.sellerId)).limit(1))[0];
+    return res.json({ ok: true, order: { ...order, buyerName: buyer?.name || buyer?.email || "Buyer", sellerName: seller?.storeName || seller?.name || seller?.email || "Seller" } });
   });
   app.post("/api/orders/:orderId/accept", async (req, res) => {
     const user = await auth(req, res); if (!user) return;

@@ -420,3 +420,14 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .bidder-auction-facts strong { overflow-wrap: anywhere; font-size: 15px; }
 .bidder-auction-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 760px) { .bidder-auction-layout { grid-template-columns: 1fr; } .bidder-auction-detail { padding: 15px; } .bidder-auction-cover { height: 280px; } }
+
+
+/* Clear auction deadline controls and buyer-specific dashboard snapshot */
+.inventory-auction-deadline { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; width: 100%; margin-top: 12px; padding: 12px; border: 1px solid #dce5df; border-radius: 12px; background: #f8fbf9; }
+.inventory-auction-deadline .field-label { min-width: 0; margin: 0; }
+.inventory-auction-deadline input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #d5e0da; border-radius: 9px; background: #fff; color: #243b3d; font: inherit; }
+.inventory-auction-deadline .button { min-height: 42px; white-space: nowrap; }
+.buyer-pulse-panel .pulse-stats { margin-top: 8px; }
+@media (max-width: 560px) {
+  .inventory-auction-deadline { grid-template-columns: 1fr; }
+}

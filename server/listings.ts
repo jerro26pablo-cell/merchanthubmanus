@@ -83,7 +83,7 @@ export const registerListingRoutes = (app: Express) => {
     const auction = listingType === "Auction" || listingType === "Both";
     const end = auction && body.auctionEndAt ? new Date(String(body.auctionEndAt)) : null;
     const reserve = auction ? Math.round(Number(body.reserveThresholdCents)) : null; const increment = auction ? Math.round(Number(body.minimumIncrementCents)) : null;
-    if (auction && (!end || Number.isNaN(end.getTime()) || reserve == null || !Number.isFinite(reserve) || reserve < 0 || increment == null || !Number.isFinite(increment) || increment < 100)) return res.status(400).json({ ok: false, error: "Choose an auction end time, reserve threshold, and increment of at least ₱1." });
+    if (auction && (!end || Number.isNaN(end.getTime()) || end.getTime() <= Date.now() || reserve == null || !Number.isFinite(reserve) || reserve < 0 || increment == null || !Number.isFinite(increment) || increment < 100)) return res.status(400).json({ ok: false, error: "Choose a future auction end time, reserve threshold, and increment of at least ₱1." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const listingId = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}-${Date.now()}`;
     try {
@@ -100,17 +100,25 @@ export const registerListingRoutes = (app: Express) => {
   app.patch("/api/listings/:listingId", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
     const row = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
     if (!row) return res.status(404).json({ ok: false, error: "Listing not found or you do not own it." });
     const nextLifecycle = req.body?.lifecycle;
     if (nextLifecycle && !["draft", "official"].includes(nextLifecycle)) return res.status(400).json({ ok: false, error: "Invalid listing state." });
     const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
-    if (pendingOffer && (req.body?.stock !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
+    if (pendingOffer && (req.body?.stock !== undefined || req.body?.auctionEndAt !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
     if (nextLifecycle === "official" && ["auction-ended", "sold"].includes(row.lifecycle) && (row.listingType === "Auction" || row.listingType === "Both")) return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
     const nextStock = req.body?.stock === undefined ? row.stock : Math.round(Number(req.body.stock));
     if (nextLifecycle === "official" && nextStock <= 0) return res.status(409).json({ ok: false, error: "Add available stock before making this listing official." });
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
-    for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "auctionEndAt", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock", "priceCents", "buyNowPriceCents"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
+    for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock", "priceCents", "buyNowPriceCents"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
+    if (req.body?.auctionEndAt !== undefined) {
+      if (row.lifecycle !== "official" || (row.listingType !== "Auction" && row.listingType !== "Both")) return res.status(409).json({ ok: false, error: "Only a live official auction can have its deadline changed." });
+      const auctionEndAt = new Date(String(req.body.auctionEndAt));
+      if (Number.isNaN(auctionEndAt.getTime()) || auctionEndAt.getTime() <= Date.now()) return res.status(400).json({ ok: false, error: "Choose a future auction closing time." });
+      updates.auctionEndAt = auctionEndAt;
+      updates.settledAt = null;
+    }
     if (Array.isArray(req.body?.photos)) updates.imageData = JSON.stringify(req.body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5));
     if (nextLifecycle) updates.lifecycle = nextLifecycle;
     if (req.body?.stock !== undefined && nextStock <= 0 && row.lifecycle === "official") {
@@ -138,7 +146,7 @@ export const registerListingRoutes = (app: Express) => {
     const auctionQuantity = Math.round(Number(req.body?.quantity));
     if (!Number.isFinite(auctionQuantity) || auctionQuantity < 1 || auctionQuantity >= source.stock) return res.status(400).json({ ok: false, error: `Auction quantity must be between 1 and ${Math.max(1, source.stock - 1)}.` });
     const end = new Date(String(req.body?.auctionEndAt ?? "")); const reserve = Math.round(Number(req.body?.reserveThresholdCents)); const increment = Math.round(Number(req.body?.minimumIncrementCents));
-    if (Number.isNaN(end.getTime()) || !Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(increment) || increment < 100) return res.status(400).json({ ok: false, error: "Auction end, reserve, and minimum ₱1 increment are required." });
+    if (Number.isNaN(end.getTime()) || end.getTime() <= Date.now() || !Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(increment) || increment < 100) return res.status(400).json({ ok: false, error: "A future auction end, reserve, and minimum ₱1 increment are required." });
     const listingId = `${source.listingId}-auction-${Date.now()}`;
     await db.update(listingsOwned).set({ stock: source.stock - auctionQuantity }).where(eq(listingsOwned.listingId, source.listingId));
     await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title: source.title, description: source.description, category: source.category, listingType: "Auction", priceCents: source.priceCents, buyNowPriceCents: null, stock: auctionQuantity, condition: source.condition, imageData: source.imageData, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle: "official" });

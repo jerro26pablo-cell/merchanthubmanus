@@ -42,18 +42,18 @@ export function registerBiddingRoutes(app: Express) {
   app.get("/api/bids/proxy", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const listingId = String(req.query.listingId ?? ""); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const rows = await db.select().from(proxyBids).where(and(eq(proxyBids.userId, user.id), eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active"))).limit(1); const all = await activeForListing(db, listingId); const currentBidCents = all.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); return res.json({ ok: true, proxy: rows[0] ?? null, walletCents: user.walletCents, currentBidCents }); });
   app.post("/api/bids/proxy", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
-    const listingId = String(req.body?.listingId ?? ""); const maxBidCents = Math.round(Number(req.body?.maxBidCents)); const incrementCents = Math.round(Number(req.body?.incrementCents));
-    if (!listingId || !Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100) return res.status(400).json({ ok: false, error: "Listing, max bid, and an increment of at least ₱1 are required." });
+    const listingId = String(req.body?.listingId ?? ""); const mode = req.body?.mode === "simple" ? "simple" : "proxy"; const initialBidCents = Math.round(Number(req.body?.bidCents)); let maxBidCents = Math.round(Number(req.body?.maxBidCents)); let incrementCents = Math.round(Number(req.body?.incrementCents));
+    if (!listingId || !Number.isFinite(initialBidCents) || initialBidCents <= 0 || (mode === "proxy" && (!Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100))) return res.status(400).json({ ok: false, error: mode === "simple" ? "Enter a valid bid amount." : "Listing, max bid, and an increment of at least ₱1 are required." });
     if (maxBidCents > user.walletCents) return res.status(400).json({ ok: false, error: `Your max bid cannot exceed your e-wallet balance of ${pesos(user.walletCents)}.` });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const listing = (await db.select({ ownerId: listingsOwned.ownerId, priceCents: listingsOwned.priceCents, auctionEndAt: listingsOwned.auctionEndAt, title: listingsOwned.title, minimumIncrementCents: listingsOwned.minimumIncrementCents, antiSnipeSeconds: listingsOwned.antiSnipeSeconds }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot bid on your own listing." });
     if (listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
-    const initialBidCents = Math.round(Number(req.body?.bidCents));
     const active = await activeForListing(db, listingId);
     const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), listing.priceCents);
     const sellerMinimumIncrement = Math.max(100, listing.minimumIncrementCents ?? 100);
+    if (mode === "simple") { maxBidCents = initialBidCents; incrementCents = sellerMinimumIncrement; }
     if (incrementCents < sellerMinimumIncrement) return res.status(400).json({ ok: false, error: `Your increment must be at least the seller baseline of ${pesos(sellerMinimumIncrement)}.` });
     const requiredBid = currentBidCents + sellerMinimumIncrement;
     if (maxBidCents < requiredBid) { await createNotification(user.id, "system", "Proxy bid limit reached", `The next bid would be ${pesos(requiredBid)}, above your maximum of ${pesos(maxBidCents)}. Increase your maximum bid to continue.`, listingId); return res.status(409).json({ ok: false, error: `Your maximum bid is below the next increment of ${pesos(requiredBid)}.`, limitReached: true }); }

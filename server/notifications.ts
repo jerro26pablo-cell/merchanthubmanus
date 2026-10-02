@@ -1,9 +1,10 @@
 import type { Express, Request, Response } from "express";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lte } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
 import { commerceOrders, listingsOwned, notifications, proxyBids } from "../drizzle/schema";
 import { resolveExpiredAuctionOutcome } from "./auctionState";
+import { publishAuctionUpdate } from "./auctionEvents";
 
 export async function createNotification(recipientId: number, type: "auction_won" | "delivery_update" | "order_created" | "system", title: string, message: string, entityId?: string) {
   const db = await getDb();
@@ -23,7 +24,7 @@ export async function settleExpiredAuctions() {
   const now = new Date();
   const expired = await db.select().from(listingsOwned).where(and(
     eq(listingsOwned.lifecycle, "official"),
-    lt(listingsOwned.auctionEndAt, now),
+    lte(listingsOwned.auctionEndAt, now),
   ));
 
   for (const listing of expired) {
@@ -52,7 +53,7 @@ export async function settleExpiredAuctions() {
     }).where(and(
       eq(listingsOwned.id, listing.id),
       eq(listingsOwned.lifecycle, "official"),
-      lt(listingsOwned.auctionEndAt, now),
+      lte(listingsOwned.auctionEndAt, now),
     ));
     if (update[0]?.affectedRows === 0) continue;
 
@@ -88,7 +89,20 @@ export async function settleExpiredAuctions() {
         await createNotification(bidder.userId, "system", "Auction ended without a sale", `The auction for “${listing.title}” ended without an eligible winner.`, listing.listingId);
       }
     }
+    publishAuctionUpdate(listing.listingId);
   }
+}
+
+let auctionSettlementTimer: ReturnType<typeof setTimeout> | undefined;
+export function startAuctionSettlementLoop(intervalMs = 2500) {
+  if (auctionSettlementTimer) return;
+  const run = async () => {
+    try { await settleExpiredAuctions(); }
+    catch (error) { console.error("[Auctions] Background settlement check failed", error); }
+    auctionSettlementTimer = setTimeout(run, intervalMs);
+    auctionSettlementTimer.unref?.();
+  };
+  void run();
 }
 
 export const registerNotificationRoutes = (app: Express) => {

@@ -4,7 +4,8 @@ import { getDb } from "./db";
 import { bidCancellationRequests, listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
 import { createNotification, settleExpiredAuctions } from "./notifications";
-import { calculateProxyWinningBidCents, createBidderLabels, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition } from "./auctionState";
+import { calculateProxyWinningBidCents, createBidderLabels, getAuctionPhase, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition } from "./auctionState";
+import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -14,9 +15,9 @@ const requireUser = async (req: Request, res: Response) => {
 const pesos = (cents: number) => `₱${(cents / 100).toLocaleString("en-PH")}`;
 const activeForListing = async (db: NonNullable<Awaited<ReturnType<typeof getDb>>>, listingId: string) => db.select().from(proxyBids).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active")));
 const auctionStatus = (row: typeof proxyBids.$inferSelect, listing: typeof listingsOwned.$inferSelect) => {
-  const ended = Boolean(listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now());
-  const bidderStatus = row.status === "offered" ? "Second chance offered" : ended ? row.status === "won" ? "Won" : "Lost" : row.status === "active" && row.currentBidCents > 0 ? "Winning" : "Losing";
-  return { auctionState: ended ? "Auction ended" : "Auction ongoing", bidderStatus };
+  const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
+  const bidderStatus = phase === "scheduled" ? "Auction scheduled" : row.status === "offered" ? "Second chance offered" : phase === "ended" ? row.status === "won" ? "Won" : "Lost" : row.status === "active" && row.currentBidCents > 0 ? "Winning" : "Losing";
+  return { auctionState: phase === "scheduled" ? "Auction scheduled" : phase === "ended" ? "Auction ended" : "Auction ongoing", bidderStatus };
 };
 
 export async function getBidHistoryForUser(userId: number) {
@@ -29,7 +30,7 @@ export async function getBidHistoryForUser(userId: number) {
   return rows.map((row) => {
     const listing = listingMap.get(row.listingId);
     const state = listing ? auctionStatus(row, listing) : { auctionState: "Auction ended", bidderStatus: "Lost" };
-    return { ...row, listingTitle: listing?.title ?? row.listingId, listingType: listing?.listingType ?? "Auction", auctionEndAt: listing?.auctionEndAt?.toISOString() ?? null, ...state };
+    return { ...row, listingTitle: listing?.title ?? row.listingId, listingType: listing?.listingType ?? "Auction", auctionStartAt: listing?.auctionStartAt?.toISOString() ?? null, auctionEndAt: listing?.auctionEndAt?.toISOString() ?? null, ...state };
   });
 }
 
@@ -49,8 +50,9 @@ export function registerBiddingRoutes(app: Express) {
     const aliases = createBidderLabels([...rows].sort((a, b) => a.id - b.id).map((row) => row.userId), user.id);
     const latestOwn = rows.find((row) => row.userId === user.id);
     const leader = rows.filter((row) => row.status === "active").sort((a, b) => b.currentBidCents - a.currentBidCents || a.id - b.id)[0];
-    const ended = Boolean(listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now());
-    const viewerBidStatus = !latestOwn ? "You have not bid" : latestOwn.status === "won" ? "Winner" : latestOwn.status === "offered" ? "Second-chance offer" : latestOwn.status === "active" ? "Winning" : ended ? "Auction ended" : latestOwn.status === "outbid" ? "Outbid" : "Not currently bidding";
+    const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
+    const ended = phase === "ended";
+    const viewerBidStatus = phase === "scheduled" ? "Auction scheduled" : !latestOwn ? "You have not bid" : latestOwn.status === "won" ? "Winner" : latestOwn.status === "offered" ? "Second-chance offer" : latestOwn.status === "active" ? "Winning" : ended ? "Auction ended" : latestOwn.status === "outbid" ? "Outbid" : "Not currently bidding";
     const visibleRows = rows.slice(0, 50);
     const history = await Promise.all(visibleRows.map(async (row) => {
       const bidder = isSeller ? (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.userId)).limit(1))[0] : undefined;
@@ -69,7 +71,41 @@ export function registerBiddingRoutes(app: Express) {
     return res.json({ ok: true, listingId, viewer: isSeller ? "seller" : "buyer", viewerBidStatus, viewerBidCurrentCents: latestOwn?.currentBidCents ?? 0, viewerMaxBidCents: latestOwn?.maxBidCents ?? 0, currentBidCents: leader?.currentBidCents ?? listing.priceCents, history });
   });
   app.get("/api/bids/my-history", async (req, res) => { const user = await requireUser(req, res); if (!user) return; return res.json({ ok: true, history: await getBidHistoryForUser(user.id) }); });
-  app.get("/api/bids/stream", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const listingId = String(req.query.listingId ?? ""); if (!listingId) return res.status(400).json({ ok: false, error: "listingId is required." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); res.setHeader("Content-Type", "text/event-stream"); res.setHeader("Cache-Control", "no-cache"); res.setHeader("Connection", "keep-alive"); const publish = async () => { const rows = await activeForListing(db, listingId); const currentBidCents = rows.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); res.write(`data: ${JSON.stringify({ listingId, currentBidCents, activeBids: rows.length, updatedAt: new Date().toISOString() })}\n\n`); }; await publish(); const timer = setInterval(publish, 2000); req.on("close", () => clearInterval(timer)); });
+  app.get("/api/bids/stream", async (req, res) => {
+    const user = await requireUser(req, res); if (!user) return;
+    const listingId = String(req.query.listingId ?? "");
+    if (!listingId) return res.status(400).json({ ok: false, error: "listingId is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    let closed = false;
+    let lastSnapshot = "";
+    const publish = async () => {
+      if (closed) return;
+      try {
+        const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+        if (!listing) return;
+        const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id));
+        const active = rows.filter((row) => row.status === "active");
+        const leader = active.sort((a, b) => b.currentBidCents - a.currentBidCents || a.id - b.id)[0];
+        const own = rows.find((row) => row.userId === user.id);
+        const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
+        const viewerBidStatus = phase === "scheduled" ? "Auction scheduled" : !own ? "You have not bid" : own.status === "won" ? "Winner" : own.status === "offered" ? "Second-chance offer" : own.status === "active" ? "Winning" : phase === "ended" ? "Auction ended" : own.status === "outbid" ? "Outbid" : "Not currently bidding";
+        const snapshot = JSON.stringify({ listingId, latestBidId: rows[0]?.id ?? null, currentBidCents: leader?.currentBidCents ?? listing.priceCents, activeBids: active.length, phase, viewerBidStatus, viewerBidCurrentCents: own?.currentBidCents ?? 0, viewerMaxBidCents: own?.maxBidCents ?? 0, auctionStartAt: listing.auctionStartAt?.toISOString() ?? null, auctionEndAt: listing.auctionEndAt?.toISOString() ?? null, lifecycle: listing.lifecycle });
+        if (snapshot === lastSnapshot) return;
+        lastSnapshot = snapshot;
+        res.write(`data: ${snapshot}\n\n`);
+      } catch (error) { console.error("[Auctions] Failed to publish live update", error); }
+    };
+    const unsubscribe = subscribeAuctionUpdates(listingId, () => { void publish(); });
+    await publish();
+    const snapshotPoller = setInterval(() => { void publish(); }, 2500);
+    const heartbeat = setInterval(() => { if (!closed) res.write(": keepalive\n\n"); }, 15000);
+    req.on("close", () => { closed = true; clearInterval(snapshotPoller); clearInterval(heartbeat); unsubscribe(); });
+  });
   app.get("/api/bids/current", async (req, res) => { await settleExpiredAuctions(); const listingId = String(req.query.listingId ?? ""); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const rows = await activeForListing(db, listingId); const currentBidCents = rows.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); return res.json({ ok: true, listingId, currentBidCents, hasBids: rows.length > 0 }); });
   app.get("/api/bids/summary", async (req, res) => { const user = await requireUser(req, res); if (!user) return; await settleExpiredAuctions(); const listingId = String(req.query.listingId ?? ""); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0]; if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." }); if (user.role !== "admin" && listing.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller can view the auction summary." }); const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.currentBidCents), desc(proxyBids.createdAt)); const leader = selectAuctionSummaryBid(rows); const leaderUser = leader ? (await db.select({ name: users.name }).from(users).where(eq(users.id, leader.userId)).limit(1))[0] : undefined; return res.json({ ok: true, listingId, bidCount: rows.length, activeBidCount: rows.filter((row) => row.status === "active").length, currentBidCents: leader?.currentBidCents ?? listing.priceCents, leadingBidder: leader ? { userId: leader.userId, name: leaderUser?.name ?? `Bidder ${leader.userId}`, status: leader.status, maxBidCents: leader.maxBidCents } : null }); });
   app.get("/api/bids/proxy", async (req, res) => {
@@ -88,13 +124,15 @@ export function registerBiddingRoutes(app: Express) {
     const listingId = String(req.body?.listingId ?? ""); const mode = req.body?.mode === "simple" ? "simple" : "proxy"; const initialBidCents = Math.round(Number(req.body?.bidCents)); let maxBidCents = Math.round(Number(req.body?.maxBidCents)); let incrementCents = Math.round(Number(req.body?.incrementCents));
     if (!listingId || !Number.isFinite(initialBidCents) || initialBidCents <= 0 || (mode === "proxy" && (!Number.isFinite(maxBidCents) || !Number.isFinite(incrementCents) || incrementCents < 100))) return res.status(400).json({ ok: false, error: mode === "simple" ? "Enter a valid bid amount." : "Listing, max bid, and an increment of at least ₱1 are required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const listing = (await db.select({ ownerId: listingsOwned.ownerId, listingType: listingsOwned.listingType, stock: listingsOwned.stock, priceCents: listingsOwned.priceCents, auctionEndAt: listingsOwned.auctionEndAt, title: listingsOwned.title, minimumIncrementCents: listingsOwned.minimumIncrementCents, antiSnipeSeconds: listingsOwned.antiSnipeSeconds, lifecycle: listingsOwned.lifecycle }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    const listing = (await db.select({ ownerId: listingsOwned.ownerId, listingType: listingsOwned.listingType, stock: listingsOwned.stock, priceCents: listingsOwned.priceCents, auctionStartAt: listingsOwned.auctionStartAt, auctionEndAt: listingsOwned.auctionEndAt, title: listingsOwned.title, minimumIncrementCents: listingsOwned.minimumIncrementCents, antiSnipeSeconds: listingsOwned.antiSnipeSeconds, lifecycle: listingsOwned.lifecycle }).from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot bid on your own listing." });
     if (listing.lifecycle !== "official") return res.status(409).json({ ok: false, error: "This auction is no longer active." });
     if (listing.listingType !== "Auction" && listing.listingType !== "Both") return res.status(409).json({ ok: false, error: "This listing is not available for auction bidding." });
     if (listing.stock <= 0) return res.status(409).json({ ok: false, error: "This auction is out of stock and cannot accept bids." });
-    if (listing.auctionEndAt && listing.auctionEndAt.getTime() <= Date.now()) return res.status(409).json({ ok: false, error: "This auction has ended." });
+    const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
+    if (phase === "scheduled") return res.status(409).json({ ok: false, error: "Bidding has not started yet. Come back at the scheduled start time." });
+    if (phase === "ended") return res.status(409).json({ ok: false, error: "This auction has ended." });
     const active = await activeForListing(db, listingId);
     const currentBidCents = active.reduce((highest, row) => Math.max(highest, row.currentBidCents), listing.priceCents);
     const sellerMinimumIncrement = Math.max(100, listing.minimumIncrementCents ?? 100);
@@ -126,6 +164,7 @@ export function registerBiddingRoutes(app: Express) {
       else await createNotification(proxy.userId, "system", "You were outbid", `Your bid on “${listing.title}” is losing at ${pesos(winningCurrent)}. Increase your maximum bid to continue.`, listingId);
     }
     const row = (await db.select().from(proxyBids).where(eq(proxyBids.id, created.id)).limit(1))[0];
+    publishAuctionUpdate(listingId);
     return res.json({ ok: true, proxy: row, walletCents: user.walletCents, currentBidCents: winningCurrent, leadingUserId: winner.userId });
   });
   app.post("/api/bids/:bidId/cancel", async (req, res) => {
@@ -154,11 +193,12 @@ export function registerBiddingRoutes(app: Express) {
       await db.update(listingsOwned).set({ lifecycle: "auction-ended" }).where(eq(listingsOwned.listingId, listing.listingId));
       await createNotification(listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${listing.title}” and no eligible second-highest bidder remains. It is in Inventory → Auction ended and can be re-auctioned or deleted.`, listing.listingId);
     }
+    publishAuctionUpdate(bid.listingId);
     return res.json({ ok: true, secondChanceUserId: offerSent ? runner?.userId ?? null : null, offerSent });
   });
   app.post("/api/bids/:bidId/cancellation-request", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const reason = String(req.body?.reason ?? "").trim().slice(0, 500); if (!reason) return res.status(400).json({ ok: false, error: "A cancellation reason is required." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const bid = (await db.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1))[0]; if (!bid || bid.status !== "active") return res.status(409).json({ ok: false, error: "Only an active bid can be submitted for cancellation." }); const existing = (await db.select().from(bidCancellationRequests).where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending"))).limit(1))[0]; if (existing) return res.json({ ok: true, request: existing, existing: true }); const result = await db.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId(); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, result[0].id)).limit(1))[0]; const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0]; if (listing) await createNotification(listing.ownerId, "system", "Bid cancellation request", `A buyer requested cancellation for “${listing.title}”: ${reason}`, bid.listingId); return res.status(201).json({ ok: true, request }); });
   app.get("/api/bids/cancellation-requests", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const all = await db.select().from(bidCancellationRequests); const owned = user.role === "admin" ? all : all.filter((request) => request.userId === user.id || request.listingId); const ownedListings = user.role === "admin" ? new Set(all.map((request) => request.listingId)) : new Set((await db.select({ listingId: listingsOwned.listingId }).from(listingsOwned).where(eq(listingsOwned.ownerId, user.id))).map((row) => row.listingId)); return res.json({ ok: true, requests: owned.filter((request) => user.role === "admin" || request.userId === user.id || ownedListings.has(request.listingId)) }); });
-  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, Number(req.params.requestId))).limit(1))[0]; if (!request) return res.status(404).json({ ok: false, error: "Cancellation request not found." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0]; if (user.role !== "admin" && listing?.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller or an admin can decide this request." }); const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null; if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." }); await db.update(bidCancellationRequests).set({ status }).where(eq(bidCancellationRequests.id, request.id)); if (status === "approved") await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.id, request.bidId)); await createNotification(request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${listing?.title ?? request.listingId}” was ${status}.`, request.listingId); return res.json({ ok: true, status }); });
+  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, Number(req.params.requestId))).limit(1))[0]; if (!request) return res.status(404).json({ ok: false, error: "Cancellation request not found." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0]; if (user.role !== "admin" && listing?.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller or an admin can decide this request." }); const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null; if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." }); await db.update(bidCancellationRequests).set({ status }).where(eq(bidCancellationRequests.id, request.id)); if (status === "approved") await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.id, request.bidId)); await createNotification(request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${listing?.title ?? request.listingId}” was ${status}.`, request.listingId); if (status === "approved") publishAuctionUpdate(request.listingId); return res.json({ ok: true, status }); });
   app.get("/api/bids/second-chance/offers", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
@@ -183,6 +223,7 @@ export function registerBiddingRoutes(app: Express) {
     await db.update(listingsOwned).set({ lifecycle: transition.listingLifecycle, stock: Math.max(0, listing.stock - 1) }).where(and(eq(listingsOwned.listingId, listingId), eq(listingsOwned.lifecycle, "auction-ended")));
     await createNotification(listing.ownerId, "auction_won", "Second-chance offer accepted", `The next-highest bidder accepted “${listing.title}” at ${pesos(runner.currentBidCents || runner.maxBidCents)}.`, listingId);
     await createNotification(user.id, "auction_won", "You are the winner of this item", `You accepted “${listing.title}” at ${pesos(runner.currentBidCents || runner.maxBidCents)}. Open your auction detail to review the item, seller, and winning amount.`, listingId);
+    publishAuctionUpdate(listingId);
     return res.json({ ok: true, listingId, status: "won" });
   });
   app.post("/api/bids/second-chance/decline", async (req, res) => {
@@ -199,6 +240,7 @@ export function registerBiddingRoutes(app: Express) {
     await db.update(listingsOwned).set({ lifecycle: transition.listingLifecycle }).where(and(eq(listingsOwned.listingId, listingId), eq(listingsOwned.lifecycle, "auction-ended")));
     await createNotification(listing.ownerId, "system", "Second-chance offer declined", `The next-highest bidder declined “${listing.title}”. The auction is ended without a sale; you can re-auction it from Inventory.`, listingId);
     await createNotification(user.id, "system", "Second-chance offer declined", `You declined the offer for “${listing.title}”.`, listingId);
+    publishAuctionUpdate(listingId);
     return res.json({ ok: true, listingId, status: "declined" });
   });
 }

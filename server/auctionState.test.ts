@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateProxyWinningBidCents,
   createBidderLabels,
+  getAuctionPhase,
   rankCurrentProxyBids,
   resolveExpiredAuctionOutcome,
   selectAuctionSummaryBid,
@@ -17,6 +18,20 @@ const saleBids = [
   bid(2, 202, "outbid", 14000, 0, "2026-10-01T10:01:00Z"),
   bid(3, 303, "outbid", 12000, 0, "2026-10-01T10:02:00Z"),
 ];
+
+describe("scheduled auction phases", () => {
+  const now = new Date("2026-10-02T07:00:00.000Z");
+
+  it("stays scheduled before the start, becomes live at the start, and ends at the deadline", () => {
+    expect(getAuctionPhase("2026-10-02T07:01:00.000Z", "2026-10-02T08:00:00.000Z", now)).toBe("scheduled");
+    expect(getAuctionPhase("2026-10-02T07:00:00.000Z", "2026-10-02T08:00:00.000Z", now)).toBe("live");
+    expect(getAuctionPhase("2026-10-02T06:00:00.000Z", "2026-10-02T07:00:00.000Z", now)).toBe("ended");
+  });
+
+  it("treats legacy auctions without a scheduled start as live until their end", () => {
+    expect(getAuctionPhase(null, "2026-10-02T08:00:00.000Z", now)).toBe("live");
+  });
+});
 
 describe("auction lifecycle rules", () => {
   it("retains an already recorded winner instead of generating a false no-sale outcome", () => {

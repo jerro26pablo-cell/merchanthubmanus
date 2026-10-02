@@ -20,6 +20,7 @@ export type Listing = {
   currentBid?: number;
   startingBid?: number;
   buyNow?: number;
+  auctionStartAt?: string;
   auctionEndAt?: string;
   reserveThreshold?: number;
   minimumIncrement?: number;

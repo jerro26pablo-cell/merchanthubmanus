@@ -12,6 +12,16 @@ export type ExpiredAuctionOutcome =
   | { kind: "sold"; winner: AuctionBidState }
   | { kind: "no-sale"; winner: null };
 
+export type AuctionPhase = "scheduled" | "live" | "ended";
+
+export function getAuctionPhase(startAt: Date | string | null | undefined, endAt: Date | string | null | undefined, now = new Date()): AuctionPhase {
+  const start = startAt == null ? null : new Date(startAt).getTime();
+  const end = endAt == null ? null : new Date(endAt).getTime();
+  if (start != null && start > now.getTime()) return "scheduled";
+  if (end != null && end <= now.getTime()) return "ended";
+  return "live";
+}
+
 /** Resolve the durable result of an ended auction, including legacy won rows. */
 export function resolveExpiredAuctionOutcome(
   bids: AuctionBidState[],

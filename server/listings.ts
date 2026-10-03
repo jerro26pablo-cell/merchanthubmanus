@@ -15,7 +15,7 @@ const requireUser = async (req: Request, res: Response) => {
 const toListing = (row: typeof listingsOwned.$inferSelect, seller = "") => {
   let photos: string[] = [];
   if (row.imageData) { try { const parsed = JSON.parse(row.imageData); photos = Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [row.imageData]; } catch { photos = [row.imageData]; } }
-  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionStartAt: row.auctionStartAt?.toISOString(), auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, lifecycle: row.lifecycle, settledAt: row.settledAt?.toISOString(), ownerId: row.ownerId };
+  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionStartAt: row.auctionStartAt?.toISOString(), auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, winnerCancellationAllowed: Boolean(row.winnerCancellationAllowed), lifecycle: row.lifecycle, settledAt: row.settledAt?.toISOString(), ownerId: row.ownerId };
 };
 export const registerListingRoutes = (app: Express) => {
   app.get("/api/metrics/overview", async (req, res) => {
@@ -90,7 +90,7 @@ export const registerListingRoutes = (app: Express) => {
     const listingId = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}-${Date.now()}`;
     try {
       const photos = Array.isArray(body.photos) ? body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5) : body.imageData ? [String(body.imageData)] : [];
-      await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), subcategory: body.subcategory ? String(body.subcategory) : null, listingType, priceCents, buyNowPriceCents: listingType === "Both" ? buyNowPriceCents : null, stock, condition: body.condition ?? "New", imageData: photos.length ? JSON.stringify(photos) : null, auctionStartAt: start, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, antiSnipeSeconds: auction ? Math.max(0, Math.round(Number(body.antiSnipeSeconds ?? 120))) : 0, lifecycle });
+      await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), subcategory: body.subcategory ? String(body.subcategory) : null, listingType, priceCents, buyNowPriceCents: listingType === "Both" ? buyNowPriceCents : null, stock, condition: body.condition ?? "New", imageData: photos.length ? JSON.stringify(photos) : null, auctionStartAt: start, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, antiSnipeSeconds: auction ? Math.max(0, Math.round(Number(body.antiSnipeSeconds ?? 120))) : 0, winnerCancellationAllowed: auction && body.winnerCancellationAllowed === false ? 0 : 1, lifecycle });
       const row = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
       if (row) await notifySavedSearchMatches(row);
       return res.status(201).json({ ok: true, listing: row ? toListing(row, user.storeName || user.name) : null });
@@ -145,14 +145,29 @@ export const registerListingRoutes = (app: Express) => {
     const user = await requireUser(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const source = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
-    if (!source || source.lifecycle === "deleted") return res.status(404).json({ ok: false, error: "Listing not found." });
+    if (!source || source.lifecycle !== "official") return res.status(404).json({ ok: false, error: "Choose an official listing to split into auction stock." });
     const auctionQuantity = Math.round(Number(req.body?.quantity));
     if (!Number.isFinite(auctionQuantity) || auctionQuantity < 1 || auctionQuantity >= source.stock) return res.status(400).json({ ok: false, error: `Auction quantity must be between 1 and ${Math.max(1, source.stock - 1)}.` });
-    const end = new Date(String(req.body?.auctionEndAt ?? "")); const reserve = Math.round(Number(req.body?.reserveThresholdCents)); const increment = Math.round(Number(req.body?.minimumIncrementCents));
-    if (Number.isNaN(end.getTime()) || end.getTime() <= Date.now() || !Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(increment) || increment < 100) return res.status(400).json({ ok: false, error: "A future auction end, reserve, and minimum ₱1 increment are required." });
+    if (req.body?.lifecycle !== undefined && !["draft", "official"].includes(req.body.lifecycle)) return res.status(400).json({ ok: false, error: "Auction status must be draft or official." });
+    const lifecycle = req.body?.lifecycle === "draft" ? "draft" : "official";
+    const start = req.body?.auctionStartAt ? new Date(String(req.body.auctionStartAt)) : null;
+    const end = new Date(String(req.body?.auctionEndAt ?? ""));
+    const startingBidCents = Math.round(Number(req.body?.startingBidCents ?? source.priceCents));
+    const reserve = Math.round(Number(req.body?.reserveThresholdCents));
+    const increment = Math.round(Number(req.body?.minimumIncrementCents));
+    if (Number.isNaN(end.getTime()) || end.getTime() <= Date.now() || (start && (Number.isNaN(start.getTime()) || start.getTime() <= Date.now() || start.getTime() >= end.getTime())) || !Number.isFinite(startingBidCents) || startingBidCents <= 0 || !Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(increment) || increment < 100) return res.status(400).json({ ok: false, error: "Choose a valid starting bid, optional future start before the end, reserve, and minimum ₱1 increment." });
     const listingId = `${source.listingId}-auction-${Date.now()}`;
-    await db.update(listingsOwned).set({ stock: source.stock - auctionQuantity }).where(eq(listingsOwned.listingId, source.listingId));
-    await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title: source.title, description: source.description, category: source.category, listingType: "Auction", priceCents: source.priceCents, buyNowPriceCents: null, stock: auctionQuantity, condition: source.condition, imageData: source.imageData, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, lifecycle: "official" });
+    try {
+      await db.transaction(async (tx) => {
+        const stockMove = await tx.update(listingsOwned).set({ stock: source.stock - auctionQuantity }).where(and(eq(listingsOwned.listingId, source.listingId), eq(listingsOwned.ownerId, user.id), eq(listingsOwned.lifecycle, "official"), eq(listingsOwned.stock, source.stock)));
+        if (stockMove[0]?.affectedRows === 0) throw new Error("INVENTORY_CHANGED");
+        await tx.insert(listingsOwned).values({ listingId, ownerId: user.id, title: source.title, description: source.description, category: source.category, listingType: "Auction", priceCents: startingBidCents, buyNowPriceCents: null, stock: auctionQuantity, condition: source.condition, imageData: source.imageData, auctionStartAt: start, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, winnerCancellationAllowed: req.body?.winnerCancellationAllowed === false ? 0 : 1, lifecycle });
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVENTORY_CHANGED") return res.status(409).json({ ok: false, error: "Inventory changed while you were splitting it. Refresh and try again." });
+      console.error("[Listings] Failed to split inventory into an auction", error);
+      return res.status(500).json({ ok: false, error: "Auction stock could not be split. No inventory change was saved." });
+    }
     const created = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name) : null });
   });

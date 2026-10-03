@@ -1,10 +1,11 @@
 import type { Express, Request, Response } from "express";
-import { and, desc, eq, lte } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingsOwned, notifications, proxyBids } from "../drizzle/schema";
+import { commerceOrders, listingsOwned, notifications, proxyBids, users } from "../drizzle/schema";
 import { resolveExpiredAuctionOutcome } from "./auctionState";
 import { publishAuctionUpdate } from "./auctionEvents";
+import { calculateAutoAuctionCharge } from "./auctionWallet";
 
 export async function createNotification(recipientId: number, type: "auction_won" | "delivery_update" | "order_created" | "system", title: string, message: string, entityId?: string) {
   const db = await getDb();
@@ -31,53 +32,105 @@ export async function settleExpiredAuctions() {
     if (listing.listingType !== "Auction" && listing.listingType !== "Both") continue;
     const bids = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
     const outcome = resolveExpiredAuctionOutcome(bids, listing.reserveThresholdCents, listing.stock);
-    const winner = outcome.kind === "sold" ? outcome.winner : null;
+    const candidateWinner = outcome.kind === "sold" ? outcome.winner : null;
+    const winnerRow = candidateWinner ? bids.find((bid) => bid.id === candidateWinner.id) ?? null : null;
+    const autoCheckout = Boolean(candidateWinner && listing.winnerCancellationAllowed === 0);
+    const amountCents = candidateWinner?.currentBidCents ?? 0;
     const staleNoSale = and(
       eq(notifications.recipientId, listing.ownerId),
       eq(notifications.entityId, listing.listingId),
       eq(notifications.title, "Auction ended without a sale"),
     );
-
-    // Repair legacy alerts in place so sellers see the actual winner and can open the auction.
-    const correctedNoSale = winner ? await db.update(notifications).set({
-      type: "auction_won",
-      title: "Auction ended with a winner",
-      message: `“${listing.title}” was won by the highest eligible bidder at ${pesos(winner.currentBidCents)}.`,
-    }).where(staleNoSale) : null;
-
-    const settledAt = listing.settledAt ?? now;
-    const update = await db.update(listingsOwned).set({
-      lifecycle: winner ? "sold" : "auction-ended",
-      settledAt,
-      stock: winner ? Math.max(0, listing.stock - 1) : listing.stock,
-    }).where(and(
-      eq(listingsOwned.id, listing.id),
-      eq(listingsOwned.lifecycle, "official"),
-      lte(listingsOwned.auctionEndAt, now),
-    ));
-    if (update[0]?.affectedRows === 0) continue;
-
     const wasAlreadySettled = Boolean(listing.settledAt);
-    if (winner) {
-      await db.update(proxyBids).set({ status: "won" }).where(eq(proxyBids.id, winner.id));
-      await db.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(and(
-        eq(proxyBids.listingId, listing.listingId),
-        eq(proxyBids.status, "active"),
-      ));
-      if (!wasAlreadySettled) {
-        await createNotification(winner.userId, "auction_won", "You are the winner of this item", `You won “${listing.title}” at ${pesos(winner.currentBidCents)}. Open your auction detail to review the item, seller, and winning amount.`, listing.listingId);
+
+    let automaticOrderId: string | null = null;
+    let automaticCheckoutFailed = false;
+    const settled = await db.transaction(async (tx) => {
+      const claimed = await tx.update(listingsOwned).set({
+        lifecycle: candidateWinner ? "sold" : "auction-ended",
+        settledAt: listing.settledAt ?? now,
+        stock: candidateWinner ? Math.max(0, listing.stock - 1) : listing.stock,
+      }).where(and(eq(listingsOwned.id, listing.id), eq(listingsOwned.lifecycle, "official"), lte(listingsOwned.auctionEndAt, now)));
+      if (claimed[0]?.affectedRows === 0) return false;
+
+      if (candidateWinner && autoCheckout) {
+        const orderAlreadyExists = (await tx.select({ orderId: commerceOrders.orderId }).from(commerceOrders).where(eq(commerceOrders.auctionBidId, candidateWinner.id)).limit(1))[0];
+        if (orderAlreadyExists) {
+          automaticOrderId = orderAlreadyExists.orderId;
+        } else {
+          const holds = await tx.select({ listingId: proxyBids.listingId, reservedCents: proxyBids.reservedCents }).from(proxyBids).where(eq(proxyBids.userId, candidateWinner.userId));
+          const heldElsewhere = holds.filter((row) => row.listingId !== listing.listingId).reduce((sum, row) => sum + Math.max(0, row.reservedCents ?? 0), 0);
+          const requiredDetails = Boolean(winnerRow!.shippingPhone && winnerRow!.shippingProvince && winnerRow!.shippingMunicipality && winnerRow!.shippingAddressDetails && winnerRow!.shippingLatitude != null && winnerRow!.shippingLongitude != null);
+          let chargeableAmount = 0;
+          try { chargeableAmount = calculateAutoAuctionCharge(winnerRow!.reservedCents, amountCents).chargedCents; } catch { chargeableAmount = 0; }
+          const chargeable = chargeableAmount > 0 && chargeableAmount <= candidateWinner.maxBidCents && requiredDetails;
+          const debited = chargeable ? await tx.update(users).set({ walletCents: sql`${users.walletCents} - ${chargeableAmount}` }).where(and(eq(users.id, candidateWinner.userId), gte(users.walletCents, chargeableAmount + heldElsewhere))) : null;
+          if (!chargeable || debited?.[0]?.affectedRows === 0) {
+            automaticCheckoutFailed = true;
+            await tx.update(listingsOwned).set({ lifecycle: "auction-ended", stock: listing.stock, settledAt: listing.settledAt ?? now }).where(eq(listingsOwned.id, listing.id));
+            await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active")));
+            await tx.update(proxyBids).set({ reservedCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
+            await tx.update(proxyBids).set({ shippingPhone: null, shippingProvince: null, shippingMunicipality: null, shippingAddressDetails: null, shippingLatitude: null, shippingLongitude: null }).where(eq(proxyBids.listingId, listing.listingId));
+            return true;
+          }
+          automaticOrderId = `MH-AUC-${candidateWinner.id}-${Date.now()}`;
+          await tx.insert(commerceOrders).values({
+            orderId: automaticOrderId,
+            listingId: listing.listingId,
+            auctionBidId: candidateWinner.id,
+            buyerId: candidateWinner.userId,
+            sellerId: listing.ownerId,
+            quantity: 1,
+            amountCents,
+            payment: "E-wallet",
+            province: winnerRow!.shippingProvince!,
+            municipality: winnerRow!.shippingMunicipality!,
+            addressDetails: winnerRow!.shippingAddressDetails,
+            contactNumber: winnerRow!.shippingPhone,
+            destinationLatitude: winnerRow!.shippingLatitude,
+            destinationLongitude: winnerRow!.shippingLongitude,
+            status: "Processing",
+          });
+        }
       }
-      if (!wasAlreadySettled && correctedNoSale?.[0]?.affectedRows === 0) await createNotification(listing.ownerId, "auction_won", "Auction ended with a winner", `“${listing.title}” was won by the highest eligible bidder at ${pesos(winner.currentBidCents)}.`, listing.listingId);
-      for (const bidder of bids.filter((bid) => bid.id !== winner.id && bid.status === "active")) {
-        await createNotification(bidder.userId, "system", "Auction lost", `The auction for “${listing.title}” ended with a winning bid of ${pesos(winner.currentBidCents)}.`, listing.listingId);
+
+      if (candidateWinner && !automaticCheckoutFailed) {
+        await tx.update(proxyBids).set({ status: "won", reservedCents: 0 }).where(eq(proxyBids.id, candidateWinner.id));
+        await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active"), ne(proxyBids.id, candidateWinner.id)));
+        await tx.update(proxyBids).set({ reservedCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
+      } else if (!candidateWinner) {
+        await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active")));
+        await tx.update(proxyBids).set({ reservedCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
+      }
+      await tx.update(proxyBids).set({ shippingPhone: null, shippingProvince: null, shippingMunicipality: null, shippingAddressDetails: null, shippingLatitude: null, shippingLongitude: null }).where(eq(proxyBids.listingId, listing.listingId));
+      return true;
+    });
+    if (!settled) continue;
+
+    if (candidateWinner && !automaticCheckoutFailed) {
+      const corrected = await db.update(notifications).set({
+        type: "auction_won",
+        title: "Auction ended with a winner",
+        message: `“${listing.title}” was won by the highest eligible bidder at ${pesos(candidateWinner.currentBidCents)}.`,
+      }).where(staleNoSale);
+      if (!wasAlreadySettled) {
+        if (autoCheckout && automaticOrderId) {
+          await createNotification(candidateWinner.userId, "order_created", "Auction won — order created automatically", `You won “${listing.title}” at ${pesos(amountCents)}. Your no-cancellation auction order ${automaticOrderId} was automatically paid from your reserved demo-wallet funds.`, automaticOrderId);
+          await createNotification(listing.ownerId, "order_created", "Auction order ready for fulfillment", `The winning buyer automatically checked out “${listing.title}” at ${pesos(amountCents)}. Order ${automaticOrderId} is ready for fulfillment.`, automaticOrderId);
+        } else {
+          await createNotification(candidateWinner.userId, "auction_won", "You are the winner of this item", `You won “${listing.title}” at ${pesos(candidateWinner.currentBidCents)}. Complete checkout from your auction record to confirm delivery and payment.`, listing.listingId);
+        }
+      }
+      if (!wasAlreadySettled && corrected[0]?.affectedRows === 0) await createNotification(listing.ownerId, "auction_won", "Auction ended with a winner", `“${listing.title}” was won by the highest eligible bidder at ${pesos(candidateWinner.currentBidCents)}.`, listing.listingId);
+      for (const bidder of bids.filter((bid) => bid.id !== candidateWinner.id && bid.status === "active")) {
+        await createNotification(bidder.userId, "system", "Auction lost", `The auction for “${listing.title}” ended with a winning bid of ${pesos(candidateWinner.currentBidCents)}. Any reserved demo-wallet funds are available again.`, listing.listingId);
       }
     } else {
-      await db.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(and(
-        eq(proxyBids.listingId, listing.listingId),
-        eq(proxyBids.status, "active"),
-      ));
       const existingNoSale = (await db.select({ id: notifications.id }).from(notifications).where(staleNoSale).limit(1))[0];
-      if (!existingNoSale) {
+      if (automaticCheckoutFailed) {
+        await createNotification(candidateWinner!.userId, "system", "Automatic checkout could not complete", `“${listing.title}” could not be auto-checked out because the reserved wallet or delivery details were incomplete. The auction ended without a sale; any demo-wallet hold was released.`, listing.listingId);
+        await createNotification(listing.ownerId, "system", "Auction ended without a sale", `“${listing.title}” could not be automatically checked out. It is in Inventory → Auction ended and can be re-auctioned or deleted.`, listing.listingId);
+      } else if (!existingNoSale) {
         const reason = listing.stock <= 0
           ? "the auction inventory sold out before settlement"
           : !bids.some((bid) => bid.status === "active")
@@ -86,13 +139,12 @@ export async function settleExpiredAuctions() {
         await createNotification(listing.ownerId, "system", "Auction ended without a sale", `“${listing.title}” ended without a sale because ${reason}. It is now in Inventory → Auction ended, where you can re-auction it or delete it.`, listing.listingId);
       }
       for (const bidder of bids.filter((bid) => bid.status === "active")) {
-        await createNotification(bidder.userId, "system", "Auction ended without a sale", `The auction for “${listing.title}” ended without an eligible winner.`, listing.listingId);
+        await createNotification(bidder.userId, "system", "Auction ended without a sale", `The auction for “${listing.title}” ended without an eligible winner. Any reserved demo-wallet funds are available again.`, listing.listingId);
       }
     }
     publishAuctionUpdate(listing.listingId);
   }
 }
-
 let auctionSettlementTimer: ReturnType<typeof setTimeout> | undefined;
 export function startAuctionSettlementLoop(intervalMs = 2500) {
   if (auctionSettlementTimer) return;

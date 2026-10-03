@@ -472,3 +472,85 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
   .buyer-bid-event-row { grid-template-columns: 1fr auto; }
   .buyer-bid-event-row .status-badge { grid-column: 1; justify-self: start; }
 }
+
+/* Auction cancellation and checkout policy */
+.auction-policy-choice,
+.auction-policy-banner,
+.auction-prebid-checkout,
+.auction-winner-checkout {
+  border: 1px solid var(--line, #e7e9ee);
+  border-radius: 14px;
+  padding: 16px;
+}
+.auction-policy-choice {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 10px;
+  background: #fbfcfe;
+}
+.auction-policy-choice > strong { font-size: 14px; }
+.auction-policy-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.auction-policy-choice input[type="radio"] { margin-top: 3px; accent-color: #e5644e; }
+.auction-policy-banner {
+  display: grid;
+  gap: 5px;
+  margin: 14px 0;
+  background: #f0faf7;
+  border-color: #bee7db;
+}
+.auction-policy-banner.locked {
+  background: #fff7f2;
+  border-color: #f1c5b4;
+}
+.auction-policy-banner strong { color: #176c5b; font-size: 14px; }
+.auction-policy-banner.locked strong { color: #9c452d; }
+.auction-policy-banner span { color: #596273; font-size: 12px; line-height: 1.5; }
+.auction-policy-banner.compact { margin: 12px 0; padding: 12px 14px; }
+.auction-card-policy {
+  display: inline-flex;
+  align-self: flex-start;
+  margin: 3px 0 8px;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.auction-card-policy.cancellable { color: #166b59; background: #e5f6f0; }
+.auction-card-policy.locked { color: #9c452d; background: #fff0e8; }
+.auction-prebid-checkout,
+.auction-winner-checkout {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  background: #fcfcfd;
+}
+.auction-prebid-checkout > div:first-child,
+.auction-winner-checkout > div:first-child { display: grid; gap: 4px; }
+.auction-prebid-checkout .checkout-map,
+.auction-winner-checkout .checkout-map { min-height: 220px; }
+.auction-pin-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.auction-consent {
+  margin: 2px 0 0;
+  border: 1px solid #f1c5b4;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff7f2;
+}
+.auction-winner-checkout h3 { margin: 0; }
+.auction-winner-checkout .field-label { margin: 0; }
+@media (max-width: 640px) {
+  .auction-policy-choice, .auction-policy-banner, .auction-prebid-checkout, .auction-winner-checkout { padding: 12px; }
+  .auction-pin-head { align-items: flex-start; flex-direction: column; }
+}

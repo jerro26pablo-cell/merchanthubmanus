@@ -25,6 +25,8 @@ export type Listing = {
   reserveThreshold?: number;
   minimumIncrement?: number;
   antiSnipeSeconds?: number;
+  /** Whether the winning buyer may voluntarily cancel after the auction closes. */
+  winnerCancellationAllowed?: boolean;
   lifecycle?: "draft" | "official" | "auction-ended" | "sold" | "deleted";
   secondChancePending?: boolean;
   settledAt?: string;

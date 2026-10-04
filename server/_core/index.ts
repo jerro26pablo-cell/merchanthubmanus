@@ -16,6 +16,7 @@ import { registerLogisticsRoutes } from "../logistics";
 import { registerNotificationRoutes, startAuctionSettlementLoop } from "../notifications";
 import { registerMessageRoutes } from "../messages";
 import { registerSavedSearchRoutes } from "../savedSearches";
+import { registerStoreRoutes } from "../stores";
 
 async function startServer() {
   const app = express();
@@ -38,6 +39,7 @@ async function startServer() {
   registerNotificationRoutes(app);
   registerMessageRoutes(app);
   registerSavedSearchRoutes(app);
+  registerStoreRoutes(app);
   registerOAuthRoutes(app);
   // tRPC API
   app.use(

@@ -31,6 +31,8 @@ export type Listing = {
   secondChancePending?: boolean;
   settledAt?: string;
   ownerId?: number;
+  sellerProvince?: string;
+  sellerMunicipality?: string;
   bidders?: number;
   timeLeft?: string;
   image: string;

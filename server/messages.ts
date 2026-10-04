@@ -1,8 +1,8 @@
 import type { Express, Request, Response } from "express";
-import { and, eq, or } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { listingsOwned, messages, notifications, users, wishlists } from "../drizzle/schema";
+import { listingPriceHistory, listingsOwned, messages, notifications, users, wishlists } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => { const user = await getAppUser(req); if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; } return user; };
@@ -40,7 +40,18 @@ export const registerMessageRoutes = (app: Express) => {
   app.get("/api/wishlist", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = await db.select().from(wishlists).where(eq(wishlists.userId, user.id)); return res.json({ ok: true, listingIds: rows.map((row) => row.listingId) });
+    const rows = await db.select().from(wishlists).where(eq(wishlists.userId, user.id));
+    if (!rows.length) return res.json({ ok: true, listingIds: [], priceChanges: [] });
+    const savedAt = new Map(rows.map((row) => [row.listingId, row.createdAt.getTime()]));
+    const allHistory = await db.select().from(listingPriceHistory).where(inArray(listingPriceHistory.listingId, rows.map((row) => row.listingId))).orderBy(desc(listingPriceHistory.createdAt));
+    const historyCount = new Map<string, number>();
+    const priceChanges = allHistory.filter((row) => row.createdAt.getTime() >= (savedAt.get(row.listingId) ?? Number.MAX_SAFE_INTEGER)).filter((row) => {
+      const count = historyCount.get(row.listingId) ?? 0;
+      if (count >= 5) return false;
+      historyCount.set(row.listingId, count + 1);
+      return true;
+    });
+    return res.json({ ok: true, listingIds: rows.map((row) => row.listingId), priceChanges });
   });
   app.post("/api/wishlist", async (req, res) => {
     const user = await auth(req, res); if (!user) return;

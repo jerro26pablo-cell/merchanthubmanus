@@ -554,3 +554,47 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
   .auction-policy-choice, .auction-policy-banner, .auction-prebid-checkout, .auction-winner-checkout { padding: 12px; }
   .auction-pin-head { align-items: flex-start; flex-direction: column; }
 }
+
+
+/* Marketplace location, followed storefronts, and saved-price discovery */
+.market-location-filter { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 22px; }
+.market-location-filter > div:first-child { display: grid; gap: 5px; min-width: 220px; }
+.market-location-filter > div:first-child > strong { color: var(--ink); font-size: 15px; }
+.market-location-filter > div:first-child > span { color: var(--muted-dark); font-size: 12px; }
+.market-location-filter .field-two { min-width: min(520px, 58%); }
+.market-location-filter .field-label { margin: 0; }
+.listing-location { display: flex; align-items: center; gap: 5px; margin: -5px 0 10px 34px; color: var(--muted-dark); font-size: 11px; }
+.storefront-banner { display: flex; align-items: center; gap: 18px; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(125deg, #fffefb 55%, #f1f1f5); }
+.storefront-avatar { display: grid; flex: 0 0 58px; width: 58px; height: 58px; place-items: center; overflow: hidden; border-radius: 17px; color: #fff; background: var(--ink); }
+.storefront-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.storefront-identity { flex: 1; min-width: 0; }
+.storefront-identity h2 { margin: 3px 0; font-size: 21px; }
+.storefront-identity > span, .storefront-identity p { display: block; margin: 0; color: var(--muted-dark); font-size: 12px; }
+.storefront-identity p { margin-top: 7px; }
+.comparison-market-reference { margin: 6px 0 0; color: #177d69; font-size: 12px; font-weight: 650; }
+.saved-search-results { display: grid; gap: 16px; }
+.saved-search-result-group { padding: 17px; border: 1px solid var(--line); border-radius: 14px; }
+.saved-search-result-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.saved-search-result-header > div { display: grid; gap: 4px; }
+.saved-search-result-header strong { color: var(--ink); font-size: 14px; }
+.saved-search-result-header span { color: var(--muted-dark); font-size: 12px; }
+.saved-search-empty { padding: 15px; border-radius: 10px; color: var(--muted-dark); background: #f7f7f9; font-size: 13px; }
+.saved-item-with-history { min-width: 0; }
+.wishlist-price-history { display: grid; gap: 7px; margin: 9px 3px 0; padding: 10px 12px; border-radius: 11px; background: #f7f8fa; }
+.wishlist-price-change { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; }
+.wishlist-price-change.increased { color: #b04b35; }
+.wishlist-price-change.dropped { color: #13805f; }
+.wishlist-price-change > span { display: grid; gap: 2px; }
+.wishlist-price-change small { color: var(--muted-dark); font-size: 11px; }
+.wishlist-no-price-change { display: block; margin: 8px 3px 0; color: var(--muted-dark); font-size: 11px; }
+@media (max-width: 760px) {
+  .market-location-filter { align-items: stretch; flex-direction: column; gap: 14px; }
+  .market-location-filter .field-two { min-width: 0; }
+  .storefront-banner { align-items: flex-start; flex-wrap: wrap; padding: 16px; }
+  .storefront-banner > .button { margin-left: 76px; }
+}
+
+.inventory-price-editor { display: flex; align-items: end; gap: 9px; margin: 10px 0 12px; }
+.inventory-price-editor .field-label { flex: 1; margin: 0; }
+.inventory-price-editor input { min-width: 100px; }
+.inventory-price-editor .button { min-height: 34px; }

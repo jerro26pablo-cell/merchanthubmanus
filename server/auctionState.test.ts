@@ -8,6 +8,7 @@ import {
   selectAuctionSummaryBid,
   selectSecondChanceBid,
   secondChanceTransition,
+  resolveWinnerCancellation,
   type AuctionBidState,
 } from "./auctionState";
 
@@ -88,6 +89,28 @@ describe("auction lifecycle rules", () => {
   it("turns an accepted offer into a sale and a declined offer into re-auctionable inventory", () => {
     expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
     expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
+  });
+
+  it("runs the cancellation and second-chance path when the seller permits cancellation", () => {
+    const bids = [
+      bid(1, 101, "cancelled", 18000, 0, "2026-10-01T10:00:00Z"),
+      bid(2, 202, "outbid", 15000, 0, "2026-10-01T10:01:00Z"),
+      bid(3, 303, "outbid", 12000, 0, "2026-10-01T10:02:00Z"),
+    ];
+    expect(resolveWinnerCancellation(true, null, null, 0)).toEqual({ allowed: true, reason: null, refundCents: 0 });
+    expect(selectSecondChanceBid(bids, 101)?.userId).toBe(202);
+    expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
+    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
+  });
+
+  it("blocks change-of-mind cancellation when the seller selected no-cancel", () => {
+    expect(resolveWinnerCancellation(false, null, null, 0)).toEqual({ allowed: false, reason: "seller-policy", refundCents: 0 });
+  });
+
+  it("refunds a still-processing e-wallet order, but blocks cancellation after fulfillment starts", () => {
+    expect(resolveWinnerCancellation(true, "Processing", "E-wallet", 125000)).toEqual({ allowed: true, reason: null, refundCents: 125000 });
+    expect(resolveWinnerCancellation(true, "In transit", "E-wallet", 125000)).toEqual({ allowed: false, reason: "delivery-started", refundCents: 0 });
+    expect(resolveWinnerCancellation(true, "Processing", "COD", 125000)).toEqual({ allowed: true, reason: null, refundCents: 0 });
   });
 });
 

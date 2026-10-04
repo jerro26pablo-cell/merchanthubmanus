@@ -109,3 +109,19 @@ export function secondChanceTransition(action: "accept" | "decline") {
     ? { bidStatus: "won" as const, listingLifecycle: "sold" as const }
     : { bidStatus: "cancelled" as const, listingLifecycle: "auction-ended" as const };
 }
+
+export type WinnerCancellationDecision =
+  | { allowed: false; reason: "seller-policy" | "delivery-started"; refundCents: 0 }
+  | { allowed: true; reason: null; refundCents: number };
+
+/** Voluntary cancellation is policy-gated and only reverses a still-processing e-wallet order. */
+export function resolveWinnerCancellation(
+  cancellationAllowed: boolean,
+  orderStatus: string | null,
+  payment: string | null,
+  amountCents: number,
+): WinnerCancellationDecision {
+  if (!cancellationAllowed) return { allowed: false, reason: "seller-policy", refundCents: 0 };
+  if (orderStatus != null && orderStatus !== "Processing") return { allowed: false, reason: "delivery-started", refundCents: 0 };
+  return { allowed: true, reason: null, refundCents: orderStatus === "Processing" && payment === "E-wallet" ? Math.max(0, Math.round(amountCents)) : 0 };
+}

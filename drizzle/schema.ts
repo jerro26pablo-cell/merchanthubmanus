@@ -1,4 +1,4 @@
-import { int, longtext, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -177,12 +177,32 @@ export const wishlists = mysqlTable("wishlists", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const storeFollows = mysqlTable("store_follows", {
+  id: int("id").autoincrement().primaryKey(),
+  followerId: int("followerId").notNull(),
+  sellerId: int("sellerId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ uniqueFollowerStore: uniqueIndex("store_follows_unique").on(table.followerId, table.sellerId) }));
+
 export const savedSearches = mysqlTable("savedSearches", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   name: varchar("name", { length: 120 }).notNull(),
   query: varchar("query", { length: 255 }).notNull().default(""),
   filter: varchar("filter", { length: 80 }).notNull().default("All items"),
+  province: varchar("province", { length: 120 }),
+  municipality: varchar("municipality", { length: 120 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const listingPriceHistory = mysqlTable("listing_price_history", {
+  id: int("id").autoincrement().primaryKey(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  sellerId: int("sellerId").notNull(),
+  previousPriceCents: int("previousPriceCents").notNull(),
+  newPriceCents: int("newPriceCents").notNull(),
+  previousBuyNowPriceCents: int("previousBuyNowPriceCents"),
+  newBuyNowPriceCents: int("newBuyNowPriceCents"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

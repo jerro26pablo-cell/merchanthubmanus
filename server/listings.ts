@@ -2,20 +2,21 @@ import type { Express, Request, Response } from "express";
 import { and, eq, ne, or } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingsOwned, proxyBids, users, wishlists } from "../drizzle/schema";
+import { commerceOrders, listingPriceHistory, listingsOwned, proxyBids, users, wishlists } from "../drizzle/schema";
 import { createNotification, settleExpiredAuctions } from "./notifications";
 import { notifySavedSearchMatches } from "./savedSearches";
 import { publishAuctionUpdate } from "./auctionEvents";
+import { notifyFollowedStoreUpcomingAuction } from "./stores";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
   if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; }
   return user;
 };
-const toListing = (row: typeof listingsOwned.$inferSelect, seller = "") => {
+const toListing = (row: typeof listingsOwned.$inferSelect, seller = "", sellerProvince?: string | null, sellerMunicipality?: string | null) => {
   let photos: string[] = [];
   if (row.imageData) { try { const parsed = JSON.parse(row.imageData); photos = Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [row.imageData]; } catch { photos = [row.imageData]; } }
-  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionStartAt: row.auctionStartAt?.toISOString(), auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, winnerCancellationAllowed: Boolean(row.winnerCancellationAllowed), lifecycle: row.lifecycle, settledAt: row.settledAt?.toISOString(), ownerId: row.ownerId };
+  return { id: row.listingId, title: row.title, description: row.description, category: row.category, subcategory: row.subcategory ?? undefined, type: row.listingType, price: row.priceCents / 100, startingBid: row.listingType === "Auction" || row.listingType === "Both" ? row.priceCents / 100 : undefined, buyNow: row.listingType === "Buy now" ? row.priceCents / 100 : row.listingType === "Both" ? (row.buyNowPriceCents ?? row.priceCents) / 100 : undefined, stock: row.stock, condition: row.condition, image: photos[0] || "", photos, seller, sellerRating: 5, accent: "coral", auctionStartAt: row.auctionStartAt?.toISOString(), auctionEndAt: row.auctionEndAt?.toISOString(), reserveThreshold: row.reserveThresholdCents == null ? undefined : row.reserveThresholdCents / 100, minimumIncrement: row.minimumIncrementCents == null ? undefined : row.minimumIncrementCents / 100, antiSnipeSeconds: row.antiSnipeSeconds ?? 120, winnerCancellationAllowed: Boolean(row.winnerCancellationAllowed), lifecycle: row.lifecycle, settledAt: row.settledAt?.toISOString(), ownerId: row.ownerId, sellerProvince: sellerProvince ?? undefined, sellerMunicipality: sellerMunicipality ?? undefined };
 };
 export const registerListingRoutes = (app: Express) => {
   app.get("/api/metrics/overview", async (req, res) => {
@@ -53,10 +54,10 @@ export const registerListingRoutes = (app: Express) => {
       ownerRows = await db.select().from(listingsOwned).where(eq(listingsOwned.ownerId, user.id));
     }
     const rows = ownerOnly ? ownerRows : ownerRows.filter((row) => row.stock > 0 && (!(row.listingType === "Auction" || row.listingType === "Both") || !row.auctionEndAt || row.auctionEndAt.getTime() > Date.now()));
-    const owners = await db.select({ id: users.id, name: users.name, storeName: users.storeName }).from(users);
-    const ownerMap = new Map(owners.map((owner) => [owner.id, owner.storeName || owner.name || "MerchantHub seller"]));
+    const owners = await db.select({ id: users.id, name: users.name, storeName: users.storeName, province: users.province, municipality: users.municipality }).from(users);
+    const ownerMap = new Map(owners.map((owner) => [owner.id, owner]));
     const pendingOffers = new Set((await db.select({ listingId: proxyBids.listingId }).from(proxyBids).where(eq(proxyBids.status, "offered"))).map((row) => row.listingId));
-    return res.json({ ok: true, listings: rows.map((row) => ({ ...toListing(row, ownerMap.get(row.ownerId) || "MerchantHub seller"), secondChancePending: pendingOffers.has(row.listingId) })) });
+    return res.json({ ok: true, listings: rows.map((row) => { const owner = ownerMap.get(row.ownerId); return { ...toListing(row, owner?.storeName || owner?.name || "MerchantHub seller", owner?.province, owner?.municipality), secondChancePending: pendingOffers.has(row.listingId) }; }) });
   });
   app.get("/api/listings/:listingId", async (req, res) => {
     const user = await getAppUser(req);
@@ -69,9 +70,9 @@ export const registerListingRoutes = (app: Express) => {
     const hasBid = Boolean(user && (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.userId, user.id))).limit(1))[0]);
     const isPublic = row.lifecycle === "official" && row.stock > 0;
     if (!isOwner && !hasBid && !isPublic) return res.status(404).json({ ok: false, error: "Listing not found." });
-    const seller = (await db.select({ name: users.name, storeName: users.storeName }).from(users).where(eq(users.id, row.ownerId)).limit(1))[0];
+    const seller = (await db.select({ name: users.name, storeName: users.storeName, province: users.province, municipality: users.municipality }).from(users).where(eq(users.id, row.ownerId)).limit(1))[0];
     const pendingOffer = Boolean(user && (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).limit(1))[0]);
-    return res.json({ ok: true, listing: { ...toListing(row, seller?.storeName || seller?.name || "MerchantHub seller"), secondChancePending: pendingOffer } });
+    return res.json({ ok: true, listing: { ...toListing(row, seller?.storeName || seller?.name || "MerchantHub seller", seller?.province, seller?.municipality), secondChancePending: pendingOffer } });
   });
   app.post("/api/listings", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
@@ -92,8 +93,11 @@ export const registerListingRoutes = (app: Express) => {
       const photos = Array.isArray(body.photos) ? body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5) : body.imageData ? [String(body.imageData)] : [];
       await db.insert(listingsOwned).values({ listingId, ownerId: user.id, title, description, category: String(body.category ?? "Other"), subcategory: body.subcategory ? String(body.subcategory) : null, listingType, priceCents, buyNowPriceCents: listingType === "Both" ? buyNowPriceCents : null, stock, condition: body.condition ?? "New", imageData: photos.length ? JSON.stringify(photos) : null, auctionStartAt: start, auctionEndAt: end, reserveThresholdCents: reserve, minimumIncrementCents: increment, antiSnipeSeconds: auction ? Math.max(0, Math.round(Number(body.antiSnipeSeconds ?? 120))) : 0, winnerCancellationAllowed: auction && body.winnerCancellationAllowed === false ? 0 : 1, lifecycle });
       const row = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-      if (row) await notifySavedSearchMatches(row);
-      return res.status(201).json({ ok: true, listing: row ? toListing(row, user.storeName || user.name) : null });
+      if (row) {
+        await notifySavedSearchMatches(row);
+        await notifyFollowedStoreUpcomingAuction(row);
+      }
+      return res.status(201).json({ ok: true, listing: row ? toListing(row, user.storeName || user.name, user.province, user.municipality) : null });
     } catch (error) {
       console.error("[Listings] Failed to create listing", error);
       return res.status(500).json({ ok: false, error: "Listing could not be saved. Check the Render logs for the database error." });
@@ -113,7 +117,17 @@ export const registerListingRoutes = (app: Express) => {
     const nextStock = req.body?.stock === undefined ? row.stock : Math.round(Number(req.body.stock));
     if (nextLifecycle === "official" && nextStock <= 0) return res.status(409).json({ ok: false, error: "Add available stock before making this listing official." });
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
-    for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock", "priceCents", "buyNowPriceCents"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
+    for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
+    if (req.body?.priceCents !== undefined) {
+      const priceCents = Math.round(Number(req.body.priceCents));
+      if (!Number.isFinite(priceCents) || priceCents <= 0) return res.status(400).json({ ok: false, error: "Enter a valid listing price greater than zero." });
+      updates.priceCents = priceCents;
+    }
+    if (req.body?.buyNowPriceCents !== undefined) {
+      const buyNowPriceCents = req.body.buyNowPriceCents == null ? null : Math.round(Number(req.body.buyNowPriceCents));
+      if (buyNowPriceCents !== null && (!Number.isFinite(buyNowPriceCents) || buyNowPriceCents <= 0)) return res.status(400).json({ ok: false, error: "Enter a valid buy-now price greater than zero." });
+      updates.buyNowPriceCents = buyNowPriceCents;
+    }
     if (req.body?.auctionEndAt !== undefined) {
       if (row.lifecycle !== "official" || (row.listingType !== "Auction" && row.listingType !== "Both")) return res.status(409).json({ ok: false, error: "Only a live official auction can have its deadline changed." });
       const auctionEndAt = new Date(String(req.body.auctionEndAt));
@@ -133,13 +147,30 @@ export const registerListingRoutes = (app: Express) => {
     }
     await db.update(listingsOwned).set(updates).where(eq(listingsOwned.listingId, req.params.listingId));
     const updated = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, req.params.listingId)).limit(1))[0];
-    if (updated && (updates.priceCents !== undefined || updates.stock !== undefined)) {
-      const watchers = await db.select({ userId: wishlists.userId }).from(wishlists).where(eq(wishlists.listingId, updated.listingId));
-      const changed = updates.priceCents !== undefined ? "price" : "inventory";
-      await Promise.all(watchers.filter((watcher) => watcher.userId !== updated.ownerId).map((watcher) => createNotification(watcher.userId, "system", changed === "price" ? "Price update on a saved item" : "Inventory update on a saved item", `“${updated.title}” has a ${changed} update in your saved items.`, updated.listingId)));
+    if (updated) {
+      const priceChanged = row.priceCents !== updated.priceCents || row.buyNowPriceCents !== updated.buyNowPriceCents;
+      const stockChanged = row.stock !== updated.stock;
+      if (priceChanged) {
+        await db.insert(listingPriceHistory).values({ listingId: updated.listingId, sellerId: updated.ownerId, previousPriceCents: row.priceCents, newPriceCents: updated.priceCents, previousBuyNowPriceCents: row.buyNowPriceCents, newBuyNowPriceCents: updated.buyNowPriceCents });
+      }
+      if (priceChanged || stockChanged) {
+        const watchers = await db.select({ userId: wishlists.userId }).from(wishlists).where(eq(wishlists.listingId, updated.listingId));
+        const buyNowChanged = row.buyNowPriceCents !== updated.buyNowPriceCents && updated.buyNowPriceCents != null;
+        const previous = buyNowChanged ? (row.buyNowPriceCents ?? row.priceCents) : row.priceCents;
+        const next = buyNowChanged ? updated.buyNowPriceCents! : updated.priceCents;
+        const direction = next > previous ? "increased" : next < previous ? "dropped" : "changed";
+        const label = buyNowChanged ? "Buy-now price" : "Listing price";
+        const message = priceChanged ? `“${updated.title}” ${label.toLowerCase()} ${direction} from ₱${(previous / 100).toLocaleString("en-PH")} to ₱${(next / 100).toLocaleString("en-PH")}.` : `“${updated.title}” has an inventory update in your saved items.`;
+        const title = priceChanged ? `Saved item price ${direction}` : "Inventory update on a saved item";
+        await Promise.all(watchers.filter((watcher) => watcher.userId !== updated.ownerId).map((watcher) => createNotification(watcher.userId, "system", title, message, updated.listingId)));
+      }
+      if (row.lifecycle !== "official" && updated.lifecycle === "official") {
+        await notifySavedSearchMatches(updated);
+        await notifyFollowedStoreUpcomingAuction(updated);
+      }
+      if (updates.auctionStartAt !== undefined || updates.auctionEndAt !== undefined || updates.lifecycle !== undefined) publishAuctionUpdate(updated.listingId);
     }
-    if (updated && (updates.auctionStartAt !== undefined || updates.auctionEndAt !== undefined || updates.lifecycle !== undefined)) publishAuctionUpdate(updated.listingId);
-    return res.json({ ok: true, listing: updated ? toListing(updated) : null });
+    return res.json({ ok: true, listing: updated ? toListing(updated, user.storeName || user.name, user.province, user.municipality) : null });
   });
   app.post("/api/listings/:listingId/split-auction", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
@@ -169,7 +200,11 @@ export const registerListingRoutes = (app: Express) => {
       return res.status(500).json({ ok: false, error: "Auction stock could not be split. No inventory change was saved." });
     }
     const created = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-    return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name) : null });
+    if (created && lifecycle === "official") {
+      await notifySavedSearchMatches(created);
+      await notifyFollowedStoreUpcomingAuction(created);
+    }
+    return res.status(201).json({ ok: true, listing: created ? toListing(created, user.storeName || user.name, user.province, user.municipality) : null });
   });
   app.post("/api/listings/:listingId/re-auction", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;

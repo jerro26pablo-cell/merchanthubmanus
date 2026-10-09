@@ -1,9 +1,9 @@
 import type { Express, Request, Response } from "express";
-import { and, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
 import { commerceOrders, listingsOwned, notifications, proxyBids, users } from "../drizzle/schema";
-import { resolveExpiredAuctionOutcome } from "./auctionState";
+import { resolveExpiredAuctionOutcome, selectSecondChanceBid } from "./auctionState";
 import { publishAuctionUpdate } from "./auctionEvents";
 import { calculateAutoAuctionCharge } from "./auctionWallet";
 
@@ -19,10 +19,47 @@ const pesos = (cents: number) => `₱${(cents / 100).toLocaleString("en-PH")}`;
  * Finalize ended official auctions exactly once. A listing's lifecycle transition
  * is the claim, so parallel notification/listing refreshes cannot settle it twice.
  */
+async function expireAcceptanceWindows(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, now: Date) {
+  const soldListings = await db.select().from(listingsOwned).where(or(eq(listingsOwned.lifecycle, "sold"), eq(listingsOwned.lifecycle, "canceled")));
+  for (const listing of soldListings) {
+    const expiring = (await db.select().from(proxyBids).where(and(eq(proxyBids.listingId, listing.listingId), or(eq(proxyBids.status, "won"), eq(proxyBids.status, "offered")), lte(proxyBids.acceptanceDeadline, now))).limit(1))[0];
+    if (!expiring) continue;
+    let runner: any = null;
+    const expired = await db.transaction(async (tx) => {
+      const claimed = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: expiring.status === "won" ? listing.stock + 1 : listing.stock }).where(and(eq(listingsOwned.listingId, listing.listingId), or(eq(listingsOwned.lifecycle, "sold"), eq(listingsOwned.lifecycle, "canceled"))));
+      if (claimed[0]?.affectedRows === 0) return false;
+      const won = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, acceptanceDeadline: null }).where(and(eq(proxyBids.id, expiring.id), eq(proxyBids.status, expiring.status)));
+      if (won[0]?.affectedRows === 0) return false;
+      const order = expiring.status === "won" ? (await tx.select().from(commerceOrders).where(eq(commerceOrders.auctionBidId, expiring.id)).limit(1))[0] : undefined;
+      if (order && order.status === "Processing") {
+        await tx.update(commerceOrders).set({ status: "Cancelled" }).where(eq(commerceOrders.id, order.id));
+        if (order.payment === "E-wallet" && order.amountCents > 0) await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${order.amountCents}` }).where(eq(users.id, expiring.userId));
+      }
+      const rows = await tx.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
+      runner = expiring.status === "won" ? selectSecondChanceBid(rows, expiring.userId) : null;
+      if (runner) {
+        const offered = await tx.update(proxyBids).set({ status: "offered", currentBidCents: runner.maxBidCents, reservedCents: 0, acceptanceDeadline: new Date(now.getTime() + 24 * 60 * 60 * 1000) }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "outbid")));
+        if (offered[0]?.affectedRows === 0) runner = null;
+      }
+      return true;
+    });
+    if (!expired) continue;
+    await createNotification(expiring.userId, "system", expiring.status === "won" ? "Winner acceptance expired" : "Second-chance offer expired", expiring.status === "won" ? `Your 24-hour acceptance window for “${listing.title}” expired. The item is being offered to the next eligible bidder.` : `Your 24-hour second-chance window for “${listing.title}” expired. The item is now in the seller’s Canceled inventory.`, listing.listingId);
+    if (runner) {
+      await createNotification(runner.userId, "system", "Second-chance offer", `The first winner did not accept “${listing.title}” within 24 hours. You have 24 hours to accept this offer at ${pesos(runner.maxBidCents)}.`, listing.listingId);
+      await createNotification(listing.ownerId, "system", "Winner acceptance expired", `The first winner did not accept “${listing.title}”. A 24-hour second-chance offer is now active.`, listing.listingId);
+    } else {
+      await createNotification(listing.ownerId, "system", "Auction canceled", `No eligible bidder accepted “${listing.title}” within the required window. It is now in Inventory → Canceled.`, listing.listingId);
+    }
+    publishAuctionUpdate(listing.listingId);
+  }
+}
+
 export async function settleExpiredAuctions() {
   const db = await getDb();
   if (!db) return;
   const now = new Date();
+  await expireAcceptanceWindows(db, now);
   const expired = await db.select().from(listingsOwned).where(and(
     eq(listingsOwned.lifecycle, "official"),
     lte(listingsOwned.auctionEndAt, now),
@@ -95,8 +132,8 @@ export async function settleExpiredAuctions() {
       }
 
       if (candidateWinner && !automaticCheckoutFailed) {
-        await tx.update(proxyBids).set({ status: "won", reservedCents: 0 }).where(eq(proxyBids.id, candidateWinner.id));
-        await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active"), ne(proxyBids.id, candidateWinner.id)));
+        await tx.update(proxyBids).set({ status: "won", reservedCents: 0, acceptanceDeadline: autoCheckout ? null : new Date(now.getTime() + 24 * 60 * 60 * 1000) }).where(eq(proxyBids.id, candidateWinner.id));
+        await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0, acceptanceDeadline: null }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active"), ne(proxyBids.id, candidateWinner.id)));
         await tx.update(proxyBids).set({ reservedCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
       } else if (!candidateWinner) {
         await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active")));

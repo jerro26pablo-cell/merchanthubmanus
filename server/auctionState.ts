@@ -107,7 +107,7 @@ export function selectSecondChanceBid(
 export function secondChanceTransition(action: "accept" | "decline") {
   return action === "accept"
     ? { bidStatus: "won" as const, listingLifecycle: "sold" as const }
-    : { bidStatus: "cancelled" as const, listingLifecycle: "auction-ended" as const };
+    : { bidStatus: "cancelled" as const, listingLifecycle: "canceled" as const };
 }
 
 export type WinnerCancellationDecision =

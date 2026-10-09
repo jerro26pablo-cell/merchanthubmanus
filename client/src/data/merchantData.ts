@@ -27,7 +27,7 @@ export type Listing = {
   antiSnipeSeconds?: number;
   /** Whether the winning buyer may voluntarily cancel after the auction closes. */
   winnerCancellationAllowed?: boolean;
-  lifecycle?: "draft" | "official" | "auction-ended" | "sold" | "deleted";
+  lifecycle?: "draft" | "official" | "auction-ended" | "sold" | "canceled" | "deleted";
   secondChancePending?: boolean;
   settledAt?: string;
   ownerId?: number;

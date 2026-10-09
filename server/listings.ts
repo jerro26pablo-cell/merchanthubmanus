@@ -110,10 +110,10 @@ export const registerListingRoutes = (app: Express) => {
     const row = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
     if (!row) return res.status(404).json({ ok: false, error: "Listing not found or you do not own it." });
     const nextLifecycle = req.body?.lifecycle;
-    if (nextLifecycle && !["draft", "official"].includes(nextLifecycle)) return res.status(400).json({ ok: false, error: "Invalid listing state." });
+    if (nextLifecycle && !["draft", "official", "canceled"].includes(nextLifecycle)) return res.status(400).json({ ok: false, error: "Invalid listing state." });
     const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
     if (pendingOffer && (req.body?.stock !== undefined || req.body?.auctionEndAt !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
-    if (nextLifecycle === "official" && ["auction-ended", "sold"].includes(row.lifecycle) && (row.listingType === "Auction" || row.listingType === "Both")) return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
+    if (nextLifecycle === "official" && ["auction-ended", "sold", "canceled"].includes(row.lifecycle) && (row.listingType === "Auction" || row.listingType === "Both")) return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
     const nextStock = req.body?.stock === undefined ? row.stock : Math.round(Number(req.body.stock));
     if (nextLifecycle === "official" && nextStock <= 0) return res.status(409).json({ ok: false, error: "Add available stock before making this listing official." });
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
@@ -211,12 +211,12 @@ export const registerListingRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const listing = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
     if (!listing || (listing.listingType !== "Auction" && listing.listingType !== "Both")) return res.status(404).json({ ok: false, error: "Auction listing not found." });
-    if (listing.lifecycle !== "auction-ended") return res.status(409).json({ ok: false, error: "Only an ended auction without a sale can be re-auctioned." });
+    if (!["auction-ended", "canceled"].includes(listing.lifecycle)) return res.status(409).json({ ok: false, error: "Only an ended or canceled auction can be re-auctioned." });
     if (listing.stock <= 0) return res.status(409).json({ ok: false, error: "Add stock before re-auctioning this item." });
     const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
     if (pendingOffer) return res.status(409).json({ ok: false, error: "Wait for the second-highest bidder to accept or decline before re-auctioning." });
     const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const updated = await db.update(listingsOwned).set({ lifecycle: "official", auctionStartAt: null, auctionEndAt: end, settledAt: null }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "auction-ended")));
+    const updated = await db.update(listingsOwned).set({ lifecycle: "official", auctionStartAt: null, auctionEndAt: end, settledAt: null }).where(and(eq(listingsOwned.listingId, listing.listingId), or(eq(listingsOwned.lifecycle, "auction-ended"), eq(listingsOwned.lifecycle, "canceled"))));
     if (updated[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "This auction changed before it could be re-auctioned. Refresh Inventory and try again." });
     await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
     const refreshed = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listing.listingId)).limit(1))[0];

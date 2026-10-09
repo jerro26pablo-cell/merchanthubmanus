@@ -228,7 +228,7 @@ export function registerBiddingRoutes(app: Express) {
       if (!listing || listing.lifecycle !== "sold") return { error: "This auction is no longer awaiting checkout.", status: 409 as const };
       if (listing.winnerCancellationAllowed === 0) return { error: "This auction automatically created the winner’s order; open the order receipt instead.", status: 409 as const };
       const existing = (await tx.select({ orderId: commerceOrders.orderId }).from(commerceOrders).where(eq(commerceOrders.auctionBidId, bid.id)).limit(1))[0];
-      if (existing) return { orderId: existing.orderId, amountCents: bid.currentBidCents || bid.maxBidCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: true };
+      if (existing) { await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id)); return { orderId: existing.orderId, amountCents: bid.currentBidCents || bid.maxBidCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: true }; }
       const amountCents = bid.currentBidCents || bid.maxBidCents;
       if (payment === "E-wallet") {
         const account = (await tx.select({ walletCents: users.walletCents }).from(users).where(eq(users.id, user.id)).limit(1))[0];
@@ -240,6 +240,7 @@ export function registerBiddingRoutes(app: Express) {
       }
       const orderId = `MH-AUC-${bid.id}-${Date.now()}`;
       await tx.insert(commerceOrders).values({ orderId, listingId: listing.listingId, auctionBidId: bid.id, buyerId: user.id, sellerId: listing.ownerId, quantity: 1, amountCents, payment, province, municipality, addressDetails, contactNumber: phone, destinationLatitude: latitude == null ? null : String(latitude), destinationLongitude: longitude == null ? null : String(longitude), status: "Processing" });
+      await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id));
       return { orderId, amountCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: false };
     });
     if ("error" in result) return res.status(result.status ?? 200).json({ ok: false, error: result.error });
@@ -266,7 +267,7 @@ export function registerBiddingRoutes(app: Express) {
 
         // Claim the sold listing first. Every later mutation is in the same transaction;
         // if the bid/order claim loses a race, throwing rolls back the stock change too.
-        const restored = await tx.update(listingsOwned).set({ lifecycle: "auction-ended", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
+        const restored = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
         if (restored[0]?.affectedRows === 0) return { error: "The listing is no longer eligible for cancellation.", status: 409 as const };
         const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
         if (cancelled[0]?.affectedRows === 0) throw new Error("WINNING_BID_ALREADY_RESOLVED");
@@ -280,7 +281,7 @@ export function registerBiddingRoutes(app: Express) {
         const runner = selectSecondChanceBid(rows, user.id);
         let offerSent = false;
         if (runner) {
-          const offered = await tx.update(proxyBids).set({ status: "offered", currentBidCents: runner.maxBidCents, reservedCents: 0 }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "outbid")));
+          const offered = await tx.update(proxyBids).set({ status: "offered", currentBidCents: runner.maxBidCents, reservedCents: 0, acceptanceDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000) }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "outbid")));
           offerSent = offered[0]?.affectedRows !== 0;
         }
         return { bid, listing, runner: offerSent ? runner : null, offerSent, refundedCents: cancellation.refundCents, orderId: order?.orderId ?? null };
@@ -297,16 +298,17 @@ export function registerBiddingRoutes(app: Express) {
       await createNotification(decision.runner.userId, "system", "Second-chance offer", `The winning buyer cancelled “${decision.listing.title}”. You were the next-highest bidder, so the item is offered to you at ${pesos(decision.runner.maxBidCents)}. Accept or decline this offer from your notification.`, decision.listing.listingId);
       await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. A second-chance offer is waiting for the next-highest bidder.`, decision.listing.listingId);
     } else {
-      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}” and no eligible second-highest bidder remains. It is in Inventory → Auction ended and can be re-auctioned or deleted.`, decision.listing.listingId);
+      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}” and no eligible second-highest bidder remains. It is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.listing.listingId);
     }
     publishAuctionUpdate(decision.bid.listingId);
     return res.json({ ok: true, secondChanceUserId: decision.runner?.userId ?? null, offerSent: decision.offerSent, refundedCents: decision.refundedCents });
   });
   app.post("/api/bids/:bidId/cancellation-request", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const reason = String(req.body?.reason ?? "").trim().slice(0, 500); if (!reason) return res.status(400).json({ ok: false, error: "A cancellation reason is required." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const bid = (await db.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1))[0]; if (!bid || bid.status !== "active") return res.status(409).json({ ok: false, error: "Only an active bid can be submitted for cancellation." }); const existing = (await db.select().from(bidCancellationRequests).where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending"))).limit(1))[0]; if (existing) return res.json({ ok: true, request: existing, existing: true }); const result = await db.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId(); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, result[0].id)).limit(1))[0]; const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0]; if (listing) await createNotification(listing.ownerId, "system", "Bid cancellation request", `A buyer requested cancellation for “${listing.title}”: ${reason}`, bid.listingId); return res.status(201).json({ ok: true, request }); });
   app.get("/api/bids/cancellation-requests", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const all = await db.select().from(bidCancellationRequests); const owned = user.role === "admin" ? all : all.filter((request) => request.userId === user.id || request.listingId); const ownedListings = user.role === "admin" ? new Set(all.map((request) => request.listingId)) : new Set((await db.select({ listingId: listingsOwned.listingId }).from(listingsOwned).where(eq(listingsOwned.ownerId, user.id))).map((row) => row.listingId)); return res.json({ ok: true, requests: owned.filter((request) => user.role === "admin" || request.userId === user.id || ownedListings.has(request.listingId)) }); });
-  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, Number(req.params.requestId))).limit(1))[0]; if (!request) return res.status(404).json({ ok: false, error: "Cancellation request not found." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0]; if (user.role !== "admin" && listing?.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller or an admin can decide this request." }); const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null; if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." }); await db.update(bidCancellationRequests).set({ status }).where(eq(bidCancellationRequests.id, request.id)); if (status === "approved") await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(eq(proxyBids.id, request.bidId)); await createNotification(request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${listing?.title ?? request.listingId}” was ${status}.`, request.listingId); if (status === "approved") publishAuctionUpdate(request.listingId); return res.json({ ok: true, status }); });
+  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, Number(req.params.requestId))).limit(1))[0]; if (!request) return res.status(404).json({ ok: false, error: "Cancellation request not found." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0]; if (listing?.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller can decide a live bid cancellation request." }); const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null; if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." }); await db.update(bidCancellationRequests).set({ status }).where(eq(bidCancellationRequests.id, request.id)); if (status === "approved") await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(eq(proxyBids.id, request.bidId)); await createNotification(request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${listing?.title ?? request.listingId}” was ${status}.`, request.listingId); if (status === "approved") publishAuctionUpdate(request.listingId); return res.json({ ok: true, status }); });
   app.get("/api/bids/second-chance/offers", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
+    await settleExpiredAuctions();
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const offeredBids = await db.select().from(proxyBids).where(and(eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).orderBy(desc(proxyBids.createdAt));
     const offers = await Promise.all(offeredBids.map(async (bid) => {
@@ -318,6 +320,7 @@ export function registerBiddingRoutes(app: Express) {
   app.post("/api/bids/second-chance/accept", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const listingId = String(req.body?.listingId ?? "");
+    await settleExpiredAuctions();
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     let decision: any;
     try {
@@ -325,7 +328,7 @@ export function registerBiddingRoutes(app: Express) {
         const runner = (await tx.select().from(proxyBids).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).orderBy(desc(proxyBids.createdAt)).limit(1))[0];
         if (!runner) return { error: "No second-chance offer is available for this account.", status: 404 as const };
         const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-        if (!listing || listing.lifecycle !== "auction-ended" || listing.stock <= 0) return { error: "This second-chance offer is no longer available.", status: 409 as const };
+        if (!listing || !["auction-ended", "canceled"].includes(listing.lifecycle) || listing.stock <= 0) return { error: "This second-chance offer is no longer available.", status: 409 as const };
         if (listing.winnerCancellationAllowed === 0) return { error: "This auction does not allow change-of-mind cancellation, so the second-chance offer is not available.", status: 409 as const };
         const amountCents = runner.currentBidCents || runner.maxBidCents;
         const bidChanged = await tx.update(proxyBids).set({ status: "won", currentBidCents: amountCents }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
@@ -348,13 +351,14 @@ export function registerBiddingRoutes(app: Express) {
   app.post("/api/bids/second-chance/decline", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const listingId = String(req.body?.listingId ?? "");
+    await settleExpiredAuctions();
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const decision = await db.transaction(async (tx) => {
       const runner = (await tx.select().from(proxyBids).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).orderBy(desc(proxyBids.createdAt)).limit(1))[0];
       if (!runner) return { error: "No second-chance offer is available for this account.", status: 404 as const };
       const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-      if (!listing || listing.lifecycle !== "auction-ended") return { error: "This second-chance offer is no longer available.", status: 409 as const };
-      const changed = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
+      if (!listing || !["auction-ended", "canceled"].includes(listing.lifecycle)) return { error: "This second-chance offer is no longer available.", status: 409 as const };
+      const changed = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, acceptanceDeadline: null }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
       if (changed[0]?.affectedRows === 0) return { error: "This offer has already been answered.", status: 409 as const };
       return { listing };
     });

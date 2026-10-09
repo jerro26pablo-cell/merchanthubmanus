@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { parse } from "cookie";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { users } from "../drizzle/schema";
@@ -12,7 +12,7 @@ const ADMIN_EMAIL = "admin@gmail.com";
 const ADMIN_PASSWORD = "admin123";
 const RIDER_EMAIL = "rider@gmail.com";
 const RIDER_PASSWORD = "rider123";
-type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; sellerEnabled: boolean };
+type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; sellerEnabled: boolean; sellerApplicationStatus?: "none" | "pending" | "approved" | "denied" };
 
 const hashPassword = (password: string) => new Promise<string>((resolve, reject) => {
   crypto.scrypt(password, SESSION_SECRET, 64, (error, derived) => {
@@ -45,7 +45,7 @@ const verifySession = (token: string | undefined) => {
   } catch { return undefined; }
 };
 
-const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: Boolean(user.sellerEnabled) });
+const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: Boolean(user.sellerEnabled) || user.sellerApplicationStatus === "approved", sellerApplicationStatus: user.sellerApplicationStatus });
 
 export async function getAppUser(req: Request): Promise<SessionUser | undefined> {
   const db = await getDb();
@@ -53,7 +53,7 @@ export async function getAppUser(req: Request): Promise<SessionUser | undefined>
   const id = verifySession(parse(req.headers.cookie ?? "")[SESSION_COOKIE]);
   if (!id) return undefined;
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
-  return result[0] ? publicUser(result[0]) : undefined;
+  return result[0] && !result[0].deactivatedAt ? publicUser(result[0]) : undefined;
 }
 
 const setSessionCookie = (req: Request, res: Response, user: SessionUser) => {
@@ -112,6 +112,7 @@ export function registerAppAuthRoutes(app: Express) {
         row = (await db.select().from(users).where(eq(users.id, row!.id)).limit(1))[0];
       }
     }
+    if (row?.deactivatedAt) return res.status(403).json({ ok: false, error: "This account has been deactivated. Contact MerchantHub support." });
     if (!row?.passwordHash || !safeEqual(await hashPassword(plainPassword), row.passwordHash)) return res.status(401).json({ ok: false, error: "Email or password is incorrect." });
     const user = publicUser(row);
     setSessionCookie(req, res, user);
@@ -124,9 +125,9 @@ export function registerAppAuthRoutes(app: Express) {
     const storeName = String(req.body?.storeName ?? "").trim(); const storeImage = req.body?.storeImage ? String(req.body.storeImage) : null;
     if (!storeName) return res.status(400).json({ ok: false, error: "Store name is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    await db.update(users).set({ storeName, storeImage, sellerEnabled: 1 }).where(eq(users.id, user.id));
+    await db.update(users).set({ storeName, storeImage, sellerEnabled: user.sellerEnabled ? 1 : 0, sellerApplicationStatus: user.sellerEnabled ? "approved" : "pending" }).where(eq(users.id, user.id));
     const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0];
-    return res.json({ ok: true, user: row ? publicUser(row) : user });
+    return res.json({ ok: true, user: row ? publicUser(row) : user, applicationSubmitted: !user.sellerEnabled });
   });
   app.patch("/api/auth/profile", async (req, res) => {
     const user = await getAppUser(req); if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
@@ -140,6 +141,35 @@ export function registerAppAuthRoutes(app: Express) {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     await db.update(users).set(updates).where(eq(users.id, user.id));
     const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0]; return res.json({ ok: true, user: row ? publicUser(row) : user });
+  });
+  app.get("/api/admin/seller-applications", async (req, res) => {
+    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const rows = await db.select().from(users).where(eq(users.sellerApplicationStatus, "pending"));
+    return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, storeName: row.storeName, storeImage: row.storeImage, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
+  });
+  app.patch("/api/admin/seller-applications/:userId", async (req, res) => {
+    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null;
+    if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const targetId = Number(req.params.userId); const result = await db.update(users).set({ sellerApplicationStatus: status, sellerEnabled: status === "approved" ? 1 : 0 }).where(and(eq(users.id, targetId), eq(users.sellerApplicationStatus, "pending")));
+    if (result[0]?.affectedRows === 0) return res.status(404).json({ ok: false, error: "Pending seller application not found." });
+    return res.json({ ok: true, status });
+  });
+  app.get("/api/admin/users", async (req, res) => {
+    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const rows = await db.select().from(users);
+    return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, sellerEnabled: Boolean(row.sellerEnabled), sellerApplicationStatus: row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
+  });
+  app.patch("/api/admin/users/:userId/deactivate", async (req, res) => {
+    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const targetId = Number(req.params.userId); if (!Number.isInteger(targetId) || targetId === user.id) return res.status(400).json({ ok: false, error: "Choose another user to deactivate." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const target = (await db.select().from(users).where(eq(users.id, targetId)).limit(1))[0]; if (!target || target.role === "admin") return res.status(404).json({ ok: false, error: "User cannot be deactivated." });
+    await db.update(users).set({ deactivatedAt: new Date(), sellerEnabled: 0 }).where(eq(users.id, targetId));
+    return res.json({ ok: true, deactivated: true });
   });
   app.post("/api/admin/reset-demo", async (req, res) => {
     const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });

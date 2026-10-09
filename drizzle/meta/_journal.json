@@ -120,6 +120,13 @@
       "when": 1791021870790,
       "tag": "0016_store_follows_location_price_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1791023000000,
+      "tag": "0017_canceled_inventory_admin_workflow",
+      "breakpoints": true
     }
   ]
 }

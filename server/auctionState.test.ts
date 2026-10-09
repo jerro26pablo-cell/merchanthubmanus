@@ -88,7 +88,7 @@ describe("auction lifecycle rules", () => {
 
   it("turns an accepted offer into a sale and a declined offer into re-auctionable inventory", () => {
     expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
-    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
+    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "canceled" });
   });
 
   it("runs the cancellation and second-chance path when the seller permits cancellation", () => {
@@ -100,7 +100,7 @@ describe("auction lifecycle rules", () => {
     expect(resolveWinnerCancellation(true, null, null, 0)).toEqual({ allowed: true, reason: null, refundCents: 0 });
     expect(selectSecondChanceBid(bids, 101)?.userId).toBe(202);
     expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
-    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
+    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "canceled" });
   });
 
   it("blocks change-of-mind cancellation when the seller selected no-cancel", () => {

@@ -21,6 +21,8 @@ export const users = mysqlTable("users", {
   storeName: varchar("storeName", { length: 160 }),
   storeImage: longtext("storeImage"),
   sellerEnabled: int("sellerEnabled").default(0).notNull(),
+  sellerApplicationStatus: mysqlEnum("sellerApplicationStatus", ["none", "pending", "approved", "denied"]).default("none").notNull(),
+  deactivatedAt: timestamp("deactivatedAt"),
   walletCents: int("walletCents").default(0).notNull(),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin", "rider"]).default("user").notNull(),
@@ -49,6 +51,7 @@ export const proxyBids = mysqlTable("proxy_bids", {
   shippingLatitude: varchar("shippingLatitude", { length: 32 }),
   shippingLongitude: varchar("shippingLongitude", { length: 32 }),
   status: mysqlEnum("status", ["active", "won", "outbid", "offered", "cancelled"]).default("active").notNull(),
+  acceptanceDeadline: timestamp("acceptanceDeadline"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -77,7 +80,7 @@ export const listingsOwned = mysqlTable("listings_owned", {
   antiSnipeSeconds: int("antiSnipeSeconds").default(120),
   winnerCancellationAllowed: int("winnerCancellationAllowed").default(1).notNull(),
   settledAt: timestamp("settledAt"),
-  lifecycle: mysqlEnum("lifecycle", ["draft", "official", "auction-ended", "sold", "deleted"]).default("draft").notNull(),
+  lifecycle: mysqlEnum("lifecycle", ["draft", "official", "auction-ended", "sold", "canceled", "deleted"]).default("draft").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

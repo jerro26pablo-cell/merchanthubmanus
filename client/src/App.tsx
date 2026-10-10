@@ -31,6 +31,8 @@ function Router() {
       <Route path="/wallet" component={Home} />
       <Route path="/admin-dashboard" component={Home} />
       <Route path="/admin" component={Home} />
+      <Route path="/seller-applications" component={Home} />
+      <Route path="/manage-users" component={Home} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

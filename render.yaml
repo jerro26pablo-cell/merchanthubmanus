@@ -15,3 +15,5 @@ services:
         generateValue: true
       - key: SESSION_SECRET
         generateValue: true
+      - key: PASSWORD_SECRET
+        generateValue: true

@@ -12,14 +12,17 @@ const ADMIN_EMAIL = "admin@gmail.com";
 const ADMIN_PASSWORD = "admin123";
 const RIDER_EMAIL = "rider@gmail.com";
 const RIDER_PASSWORD = "rider123";
+const PASSWORD_SECRET = process.env.PASSWORD_SECRET ?? "merchant-hub-password-secret-v1";
+const LEGACY_PASSWORD_SECRETS = [process.env.MANUS_JWT_SECRET, process.env.SESSION_SECRET, "merchant-hub-demo-session-secret"].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
 type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; sellerEnabled: boolean; sellerApplicationStatus?: "none" | "pending" | "approved" | "denied" };
 
-const hashPassword = (password: string) => new Promise<string>((resolve, reject) => {
-  crypto.scrypt(password, SESSION_SECRET, 64, (error, derived) => {
+const hashPasswordWithSecret = (password: string, secret: string) => new Promise<string>((resolve, reject) => {
+  crypto.scrypt(password, secret, 64, (error, derived) => {
     if (error) return reject(error);
     resolve(derived.toString("hex"));
   });
 });
+const hashPassword = (password: string) => hashPasswordWithSecret(password, PASSWORD_SECRET);
 
 const safeEqual = (left: string, right: string) => {
   const a = Buffer.from(left, "hex");
@@ -114,7 +117,15 @@ export function registerAppAuthRoutes(app: Express) {
       }
     }
     if (row?.deactivatedAt) return res.status(403).json({ ok: false, error: "This account has been deactivated. Contact MerchantHub support." });
-    if (!row?.passwordHash || !safeEqual(await hashPassword(plainPassword), row.passwordHash)) return res.status(401).json({ ok: false, error: "Email or password is incorrect." });
+    if (!row?.passwordHash) return res.status(401).json({ ok: false, error: "Email or password is incorrect." });
+    const currentHash = await hashPassword(plainPassword);
+    let passwordMatches = safeEqual(currentHash, row.passwordHash);
+    let usedLegacyHash = false;
+    for (const legacySecret of LEGACY_PASSWORD_SECRETS) {
+      if (!passwordMatches && safeEqual(await hashPasswordWithSecret(plainPassword, legacySecret), row.passwordHash)) { passwordMatches = true; usedLegacyHash = true; }
+    }
+    if (!passwordMatches) return res.status(401).json({ ok: false, error: "Email or password is incorrect." });
+    if (usedLegacyHash && row.id) await db.update(users).set({ passwordHash: currentHash }).where(eq(users.id, row.id));
     const user = publicUser(row);
     setSessionCookie(req, res, user);
     return res.json({ ok: true, user });

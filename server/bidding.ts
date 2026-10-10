@@ -252,6 +252,8 @@ export function registerBiddingRoutes(app: Express) {
   });
   app.post("/api/bids/:bidId/cancel", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
+    const cancellationReason = String(req.body?.reason ?? "").trim().slice(0, 500);
+    if (!cancellationReason) return res.status(400).json({ ok: false, error: "Please provide a reason for canceling the winning item." });
     await settleExpiredAuctions();
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     let decision: any;
@@ -269,7 +271,7 @@ export function registerBiddingRoutes(app: Express) {
         // if the bid/order claim loses a race, throwing rolls back the stock change too.
         const restored = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
         if (restored[0]?.affectedRows === 0) return { error: "The listing is no longer eligible for cancellation.", status: 409 as const };
-        const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
+        const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
         if (cancelled[0]?.affectedRows === 0) throw new Error("WINNING_BID_ALREADY_RESOLVED");
         if (order) {
           const orderCancelled = await tx.update(commerceOrders).set({ status: "Cancelled" }).where(and(eq(commerceOrders.id, order.id), eq(commerceOrders.status, "Processing")));
@@ -296,9 +298,9 @@ export function registerBiddingRoutes(app: Express) {
     await createNotification(user.id, "system", "Auction cancellation confirmed", `Your winning bid for “${decision.listing.title}” was cancelled.${refundText}`, decision.listing.listingId);
     if (decision.offerSent && decision.runner) {
       await createNotification(decision.runner.userId, "system", "Second-chance offer", `The winning buyer cancelled “${decision.listing.title}”. You were the next-highest bidder, so the item is offered to you at ${pesos(decision.runner.maxBidCents)}. Accept or decline this offer from your notification.`, decision.listing.listingId);
-      await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. A second-chance offer is waiting for the next-highest bidder.`, decision.listing.listingId);
+      await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. A second-chance offer is waiting for the next-highest bidder.`, decision.listing.listingId);
     } else {
-      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}” and no eligible second-highest bidder remains. It is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.listing.listingId);
+      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. No eligible second-highest bidder remains; it is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.listing.listingId);
     }
     publishAuctionUpdate(decision.bid.listingId);
     return res.json({ ok: true, secondChanceUserId: decision.runner?.userId ?? null, offerSent: decision.offerSent, refundedCents: decision.refundedCents });

@@ -598,3 +598,4 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .inventory-price-editor .field-label { flex: 1; margin: 0; }
 .inventory-price-editor input { min-width: 100px; }
 .inventory-price-editor .button { min-height: 34px; }
+.bid-cancellation-reason { display:block; margin-top:4px; color:#a25445; font-size:10px; line-height:1.4; }

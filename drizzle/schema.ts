@@ -52,6 +52,7 @@ export const proxyBids = mysqlTable("proxy_bids", {
   shippingLongitude: varchar("shippingLongitude", { length: 32 }),
   status: mysqlEnum("status", ["active", "won", "outbid", "offered", "cancelled"]).default("active").notNull(),
   acceptanceDeadline: timestamp("acceptanceDeadline"),
+  cancellationReason: varchar("cancellationReason", { length: 500 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

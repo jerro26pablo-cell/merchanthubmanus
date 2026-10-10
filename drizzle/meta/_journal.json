@@ -127,6 +127,13 @@
       "when": 1791023000000,
       "tag": "0017_canceled_inventory_admin_workflow",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1791025000000,
+      "tag": "0018_winner_cancellation_reason",
+      "breakpoints": true
     }
   ]
 }

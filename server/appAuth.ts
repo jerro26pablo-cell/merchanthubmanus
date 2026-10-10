@@ -4,7 +4,7 @@ import { parse } from "cookie";
 import { and, eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db";
-import { users } from "../drizzle/schema";
+import { notifications, users } from "../drizzle/schema";
 
 const SESSION_COOKIE = "merchant_hub_session";
 const SESSION_SECRET = process.env.MANUS_JWT_SECRET ?? process.env.SESSION_SECRET ?? "merchant-hub-demo-session-secret";
@@ -167,7 +167,14 @@ export function registerAppAuthRoutes(app: Express) {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const targetId = Number(req.params.userId); const result = await db.update(users).set({ sellerApplicationStatus: status, sellerEnabled: status === "approved" ? 1 : 0 }).where(and(eq(users.id, targetId), eq(users.sellerApplicationStatus, "pending")));
     if (result[0]?.affectedRows === 0) return res.status(404).json({ ok: false, error: "Pending seller application not found." });
+    await db.insert(notifications).values({ recipientId: targetId, type: "system", title: status === "approved" ? "Seller application approved" : "Seller application denied", message: status === "approved" ? "Your seller application was approved. Seller tools and listing creation are now available." : "Your seller application was denied. You can submit a new application after reviewing your seller details." });
     return res.json({ ok: true, status });
+  });
+  app.get("/api/admin/overview", async (req, res) => {
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const rows = await db.select({ sellerApplicationStatus: users.sellerApplicationStatus, deactivatedAt: users.deactivatedAt, role: users.role }).from(users);
+    return res.json({ ok: true, metrics: { totalUsers: rows.length, activeUsers: rows.filter((row) => !row.deactivatedAt).length, deactivatedUsers: rows.filter((row) => Boolean(row.deactivatedAt)).length, pendingSellerApplications: rows.filter((row) => row.sellerApplicationStatus === "pending").length, approvedSellers: rows.filter((row) => row.sellerApplicationStatus === "approved").length } });
   });
   app.get("/api/admin/users", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });

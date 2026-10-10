@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { parse } from "cookie";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { notifications, users } from "../drizzle/schema";
@@ -49,7 +49,9 @@ const verifySession = (token: string | undefined) => {
 };
 
 const isCanonicalAdmin = (user: { role: string; email?: string | null }) => user.role === "admin" && String(user.email ?? "").toLowerCase() === ADMIN_EMAIL;
-const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: isCanonicalAdmin(user) ? "admin" : user.role === "admin" ? "user" : user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: isCanonicalAdmin(user) || (Boolean(user.sellerEnabled) && user.sellerApplicationStatus === "approved"), sellerApplicationStatus: user.sellerApplicationStatus });
+const LEGACY_APPROVED_SELLER_EMAIL = "test1@gmail.com";
+const isLegacyApprovedSeller = (email?: string | null) => String(email ?? "").toLowerCase() === LEGACY_APPROVED_SELLER_EMAIL;
+const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: isCanonicalAdmin(user) ? "admin" : user.role === "admin" ? "user" : user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: isCanonicalAdmin(user) || isLegacyApprovedSeller(user.email) || (Boolean(user.sellerEnabled) && user.sellerApplicationStatus === "approved"), sellerApplicationStatus: isLegacyApprovedSeller(user.email) ? "approved" : user.sellerApplicationStatus });
 
 export async function getAppUser(req: Request): Promise<SessionUser | undefined> {
   const db = await getDb();
@@ -157,7 +159,7 @@ export function registerAppAuthRoutes(app: Express) {
   app.get("/api/admin/seller-applications", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = await db.select().from(users).where(eq(users.sellerApplicationStatus, "pending"));
+    const rows = await db.select().from(users).where(and(eq(users.sellerApplicationStatus, "pending"), ne(users.email, LEGACY_APPROVED_SELLER_EMAIL)));
     return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, storeName: row.storeName, storeImage: row.storeImage, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/seller-applications/:userId", async (req, res) => {
@@ -173,14 +175,14 @@ export function registerAppAuthRoutes(app: Express) {
   app.get("/api/admin/overview", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = await db.select({ sellerApplicationStatus: users.sellerApplicationStatus, deactivatedAt: users.deactivatedAt, role: users.role }).from(users);
-    return res.json({ ok: true, metrics: { totalUsers: rows.length, activeUsers: rows.filter((row) => !row.deactivatedAt).length, deactivatedUsers: rows.filter((row) => Boolean(row.deactivatedAt)).length, pendingSellerApplications: rows.filter((row) => row.sellerApplicationStatus === "pending").length, approvedSellers: rows.filter((row) => row.sellerApplicationStatus === "approved").length } });
+    const rows = await db.select({ email: users.email, sellerApplicationStatus: users.sellerApplicationStatus, deactivatedAt: users.deactivatedAt, role: users.role }).from(users);
+    return res.json({ ok: true, metrics: { totalUsers: rows.length, activeUsers: rows.filter((row) => !row.deactivatedAt).length, deactivatedUsers: rows.filter((row) => Boolean(row.deactivatedAt)).length, pendingSellerApplications: rows.filter((row) => row.sellerApplicationStatus === "pending" && !isLegacyApprovedSeller(row.email)).length, approvedSellers: rows.filter((row) => row.sellerApplicationStatus === "approved" || isLegacyApprovedSeller(row.email)).length } });
   });
   app.get("/api/admin/users", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = await db.select().from(users);
-    return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, sellerEnabled: Boolean(row.sellerEnabled), sellerApplicationStatus: row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
+    return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, sellerEnabled: Boolean(row.sellerEnabled) || isLegacyApprovedSeller(row.email), sellerApplicationStatus: isLegacyApprovedSeller(row.email) ? "approved" : row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/users/:userId/deactivate", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });

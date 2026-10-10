@@ -45,7 +45,8 @@ const verifySession = (token: string | undefined) => {
   } catch { return undefined; }
 };
 
-const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: Boolean(user.sellerEnabled) || user.sellerApplicationStatus === "approved", sellerApplicationStatus: user.sellerApplicationStatus });
+const isCanonicalAdmin = (user: { role: string; email?: string | null }) => user.role === "admin" && String(user.email ?? "").toLowerCase() === ADMIN_EMAIL;
+const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: isCanonicalAdmin(user) ? "admin" : user.role === "admin" ? "user" : user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: isCanonicalAdmin(user) || (Boolean(user.sellerEnabled) && user.sellerApplicationStatus === "approved"), sellerApplicationStatus: user.sellerApplicationStatus });
 
 export async function getAppUser(req: Request): Promise<SessionUser | undefined> {
   const db = await getDb();
@@ -143,13 +144,13 @@ export function registerAppAuthRoutes(app: Express) {
     const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0]; return res.json({ ok: true, user: row ? publicUser(row) : user });
   });
   app.get("/api/admin/seller-applications", async (req, res) => {
-    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = await db.select().from(users).where(eq(users.sellerApplicationStatus, "pending"));
     return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, storeName: row.storeName, storeImage: row.storeImage, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/seller-applications/:userId", async (req, res) => {
-    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null;
     if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
@@ -158,13 +159,13 @@ export function registerAppAuthRoutes(app: Express) {
     return res.json({ ok: true, status });
   });
   app.get("/api/admin/users", async (req, res) => {
-    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = await db.select().from(users);
     return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, sellerEnabled: Boolean(row.sellerEnabled), sellerApplicationStatus: row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/users/:userId/deactivate", async (req, res) => {
-    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const targetId = Number(req.params.userId); if (!Number.isInteger(targetId) || targetId === user.id) return res.status(400).json({ ok: false, error: "Choose another user to deactivate." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const target = (await db.select().from(users).where(eq(users.id, targetId)).limit(1))[0]; if (!target || target.role === "admin") return res.status(404).json({ ok: false, error: "User cannot be deactivated." });
@@ -172,7 +173,7 @@ export function registerAppAuthRoutes(app: Express) {
     return res.json({ ok: true, deactivated: true });
   });
   app.post("/api/admin/reset-demo", async (req, res) => {
-    const user = await getAppUser(req); if (user?.role !== "admin") return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     try {
       await db.execute(sql.raw("DELETE FROM proxy_bids")); await db.execute(sql.raw("DELETE FROM commerce_orders")); await db.execute(sql.raw("DELETE FROM payment_orders")); await db.execute(sql.raw("DELETE FROM stripe_events")); await db.execute(sql.raw("DELETE FROM shipping_labels")); await db.execute(sql.raw("DELETE FROM notifications")); await db.execute(sql.raw("DELETE FROM messages")); await db.execute(sql.raw("DELETE FROM wishlists")); await db.execute(sql.raw("DELETE FROM rider_locations")); await db.execute(sql.raw("DELETE FROM listings_owned"));

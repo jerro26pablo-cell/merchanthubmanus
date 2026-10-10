@@ -172,6 +172,14 @@ export function registerAppAuthRoutes(app: Express) {
     await db.update(users).set({ deactivatedAt: new Date(), sellerEnabled: 0 }).where(eq(users.id, targetId));
     return res.json({ ok: true, deactivated: true });
   });
+  app.patch("/api/admin/users/:userId/activate", async (req, res) => {
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const targetId = Number(req.params.userId); if (!Number.isInteger(targetId) || targetId === user.id) return res.status(400).json({ ok: false, error: "Choose another user to activate." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const target = (await db.select().from(users).where(eq(users.id, targetId)).limit(1))[0]; if (!target || !target.deactivatedAt || target.role === "admin") return res.status(404).json({ ok: false, error: "Deactivated user cannot be activated." });
+    await db.update(users).set({ deactivatedAt: null, sellerEnabled: target.sellerApplicationStatus === "approved" ? 1 : 0 }).where(eq(users.id, targetId));
+    return res.json({ ok: true, activated: true });
+  });
   app.post("/api/admin/reset-demo", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });

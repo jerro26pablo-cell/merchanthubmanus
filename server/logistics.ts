@@ -18,6 +18,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
     if (!listing || listing.lifecycle !== "official") return res.status(404).json({ ok: false, error: "This listing is no longer available." });
+    if (listing.listingType !== "Buy now") return res.status(409).json({ ok: false, error: "Auction listings must be purchased through the bidding process." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot buy your own listing." });
     const requestedQuantity = Math.round(Number(body.quantity));
     if (!Number.isFinite(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ ok: false, error: "Choose at least one item." });

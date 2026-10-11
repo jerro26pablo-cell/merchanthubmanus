@@ -25,7 +25,7 @@ async function followerCount(db: NonNullable<Awaited<ReturnType<typeof getDb>>>,
 }
 
 export async function notifyFollowedStoreUpcomingAuction(listing: typeof listingsOwned.$inferSelect) {
-  if (listing.lifecycle !== "official" || listing.stock <= 0 || (listing.listingType !== "Auction" && listing.listingType !== "Both") || !listing.auctionStartAt || listing.auctionStartAt.getTime() <= Date.now() || (listing.auctionEndAt && listing.auctionEndAt.getTime() <= listing.auctionStartAt.getTime())) return;
+  if (listing.lifecycle !== "official" || listing.stock <= 0 || listing.listingType !== "Auction" || !listing.auctionStartAt || listing.auctionStartAt.getTime() <= Date.now() || (listing.auctionEndAt && listing.auctionEndAt.getTime() <= listing.auctionStartAt.getTime())) return;
   const db = await getDb(); if (!db) return;
   const store = await getStore(db, listing.ownerId); if (!store) return;
   const followers = await db.select({ followerId: storeFollows.followerId }).from(storeFollows).where(eq(storeFollows.sellerId, listing.ownerId));

@@ -46,6 +46,7 @@ export function registerSavedSearchRoutes(app: Express) {
     const user = await auth(req, res); if (!user) return;
     const query = normalize(req.body?.query);
     const filter = normalize(req.body?.filter, 80) || "All items";
+    if (filter.toLocaleLowerCase() === "both") return res.status(400).json({ ok: false, error: "Choose Buy now or Auction as the listing type filter." });
     const province = normalize(req.body?.province, 120) || null;
     const municipality = normalize(req.body?.municipality, 120) || null;
     if (!query && filter === "All items" && !province && !municipality) return res.status(400).json({ ok: false, error: "Add a search term, choose a filter, or select a location before saving." });

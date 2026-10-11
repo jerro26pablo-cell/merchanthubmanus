@@ -151,7 +151,7 @@ export function registerBiddingRoutes(app: Express) {
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot bid on your own listing." });
     if (listing.lifecycle !== "official") return res.status(409).json({ ok: false, error: "This auction is no longer active." });
-    if (listing.listingType !== "Auction" && listing.listingType !== "Both") return res.status(409).json({ ok: false, error: "This listing is not available for auction bidding." });
+    if (listing.listingType !== "Auction") return res.status(409).json({ ok: false, error: "This listing is not available for auction bidding." });
     if (listing.stock <= 0) return res.status(409).json({ ok: false, error: "This auction is out of stock and cannot accept bids." });
     const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
     if (phase === "scheduled") return res.status(409).json({ ok: false, error: "Bidding has not started yet. Come back at the scheduled start time." });

@@ -66,7 +66,7 @@ export async function settleExpiredAuctions() {
   ));
 
   for (const listing of expired) {
-    if (listing.listingType !== "Auction" && listing.listingType !== "Both") continue;
+    if (listing.listingType !== "Auction") continue;
     const bids = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
     const outcome = resolveExpiredAuctionOutcome(bids, listing.reserveThresholdCents, listing.stock);
     const candidateWinner = outcome.kind === "sold" ? outcome.winner : null;

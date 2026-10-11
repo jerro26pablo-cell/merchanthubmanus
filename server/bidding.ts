@@ -1,10 +1,10 @@
 import type { Express, Request, Response } from "express";
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "./db";
-import { bidCancellationRequests, commerceOrders, listingsOwned, proxyBids, users } from "../drizzle/schema";
+import { auctionBidEventBatches, bidCancellationRequests, commerceOrders, listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
 import { createNotification, settleExpiredAuctions } from "./notifications";
-import { calculateProxyWinningBidCents, createBidderLabels, getAuctionPhase, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition, resolveWinnerCancellation } from "./auctionState";
+import { buildProxyBidLadderEvents, calculateProxyWinningBidCents, createBidderLabels, getMinimumNextBidCents, getAuctionPhase, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition, resolveWinnerCancellation } from "./auctionState";
 import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 import { calculateAuctionHoldChange, getSpendableWalletCents } from "./auctionWallet";
 
@@ -70,28 +70,46 @@ export function registerBiddingRoutes(app: Express) {
     if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
     const isSeller = user.role === "admin" || listing.ownerId === user.id;
     const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id));
+    const batches = await db.select().from(auctionBidEventBatches).where(eq(auctionBidEventBatches.listingId, listingId)).orderBy(desc(auctionBidEventBatches.createdAt), desc(auctionBidEventBatches.id));
     const aliases = createBidderLabels([...rows].sort((a, b) => a.id - b.id).map((row) => row.userId), user.id);
+    const bidderProfiles = isSeller && rows.length ? await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(inArray(users.id, [...new Set(rows.map((row) => row.userId))])) : [];
+    const profileById = new Map(bidderProfiles.map((profile) => [profile.id, profile]));
     const latestOwn = rows.find((row) => row.userId === user.id);
-    const leader = rows.filter((row) => row.status === "active").sort((a, b) => b.currentBidCents - a.currentBidCents || a.id - b.id)[0];
+    const leader = rows.filter((row) => row.status === "active" || row.status === "won").sort((a, b) => b.currentBidCents - a.currentBidCents || a.id - b.id)[0];
     const phase = getAuctionPhase(listing.auctionStartAt, listing.auctionEndAt);
     const ended = phase === "ended";
     const viewerBidStatus = phase === "scheduled" ? "Auction scheduled" : !latestOwn ? "You have not bid" : latestOwn.status === "won" ? "Winner" : latestOwn.status === "offered" ? "Second-chance offer" : latestOwn.status === "active" ? "Winning" : ended ? "Auction ended" : latestOwn.status === "outbid" ? "Outbid" : "Not currently bidding";
-    const visibleRows = rows.slice(0, 50);
-    const history = await Promise.all(visibleRows.map(async (row) => {
-      const bidder = isSeller ? (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.userId)).limit(1))[0] : undefined;
+    const proxyById = new Map(rows.map((row) => [row.id, row]));
+    const eventItems: Array<{ id: string; proxyBidId: number; userId: number; amountCents: number; kind: "submitted" | "automatic"; createdAt: Date; batchId: number; stepIndex: number }> = [];
+    for (const batch of batches) {
+      try {
+        const parsed = JSON.parse(batch.eventsJson);
+        if (!Array.isArray(parsed)) continue;
+        parsed.forEach((event: any, stepIndex: number) => {
+          if (!Number.isInteger(Number(event.proxyBidId)) || !Number.isInteger(Number(event.userId)) || !Number.isFinite(Number(event.amountCents))) return;
+          eventItems.push({ id: `proxy-event-${batch.id}-${stepIndex}`, proxyBidId: Number(event.proxyBidId), userId: Number(event.userId), amountCents: Number(event.amountCents), kind: event.kind === "automatic" ? "automatic" : "submitted", createdAt: batch.createdAt, batchId: batch.id, stepIndex });
+        });
+      } catch { /* ignore malformed historic event batches */ }
+    }
+    eventItems.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.batchId - a.batchId || b.stepIndex - a.stepIndex);
+    const referencedProxyIds = new Set(eventItems.map((event) => event.proxyBidId));
+    const latestLeaderEventId = eventItems.find((event) => event.proxyBidId === leader?.id)?.id;
+    const history = eventItems.slice(0, 300).map((event) => {
+      const proxy = proxyById.get(event.proxyBidId);
+      const profile = profileById.get(event.userId);
+      const bidder = isSeller ? `${profile?.name || profile?.email || `Bidder ${event.userId}`} · ${aliases.get(event.userId) ?? `Bidder ${event.userId}`}` : aliases.get(event.userId) ?? "Bidder";
+      const displayStatus = event.id === latestLeaderEventId ? "Winning" : proxy?.status === "cancelled" ? "Cancelled" : event.kind === "automatic" ? "Auto response" : proxy?.status === "active" ? "Bid placed" : "Outbid";
+      return { id: event.id, amountCents: event.amountCents, createdAt: event.createdAt, ...(isSeller || event.userId === user.id ? { maxBidCents: proxy?.maxBidCents ?? 0 } : {}), ...(isSeller ? { userId: event.userId, maxBidCents: proxy?.maxBidCents ?? 0 } : {}), bidder, isCurrentUser: event.userId === user.id, displayStatus, method: event.kind === "automatic" ? "Automatic proxy response" : "Bid submitted", listingTitle: listing.title, cancellationReason: proxy?.cancellationReason ?? null, batchId: event.batchId, stepIndex: event.stepIndex };
+    });
+    const legacyRows = rows.filter((row) => !referencedProxyIds.has(row.id)).slice(0, 50);
+    const legacyHistory = legacyRows.map((row) => {
+      const bidder = profileById.get(row.userId);
       const { userId: bidderUserId, maxBidCents, reservedCents: _reservedCents, shippingPhone: _shippingPhone, shippingProvince: _shippingProvince, shippingMunicipality: _shippingMunicipality, shippingAddressDetails: _shippingAddressDetails, shippingLatitude: _shippingLatitude, shippingLongitude: _shippingLongitude, ...publicFields } = row;
       const displayStatus = row.status === "active" ? "Winning" : row.status === "won" ? "Winner" : row.status === "offered" ? "Second-chance offer" : row.status === "outbid" ? "Outbid" : "Resolved";
-      return {
-        ...publicFields,
-        ...(isSeller ? { userId: bidderUserId, maxBidCents } : row.userId === user.id ? { maxBidCents } : {}),
-        amountCents: isSeller || row.userId === user.id ? (row.currentBidCents || maxBidCents) : row.currentBidCents,
-        bidder: isSeller ? `${bidder?.name || bidder?.email || `Bidder ${bidderUserId}`} · ${aliases.get(bidderUserId) ?? "Bidder"}` : aliases.get(bidderUserId) ?? "Bidder",
-        isCurrentUser: row.userId === user.id,
-        displayStatus,
-        listingTitle: listing.title,
-      };
-    }));
-    return res.json({ ok: true, listingId, viewer: isSeller ? "seller" : "buyer", viewerBidStatus, viewerBidCurrentCents: latestOwn?.currentBidCents ?? 0, viewerMaxBidCents: latestOwn?.maxBidCents ?? 0, currentBidCents: leader?.currentBidCents ?? listing.priceCents, history });
+      return { ...publicFields, ...(isSeller ? { userId: bidderUserId, maxBidCents } : row.userId === user.id ? { maxBidCents } : {}), amountCents: isSeller || row.userId === user.id ? (row.currentBidCents || maxBidCents) : row.currentBidCents, bidder: isSeller ? `${bidder?.name || bidder?.email || `Bidder ${bidderUserId}`} · ${aliases.get(bidderUserId) ?? "Bidder"}` : aliases.get(bidderUserId) ?? "Bidder", isCurrentUser: row.userId === user.id, displayStatus, listingTitle: listing.title, method: row.isAutomatic ? "Automatic proxy" : "Bid submitted" };
+    });
+    const historyItems = [...history, ...legacyHistory].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() || Number(b.batchId ?? -1) - Number(a.batchId ?? -1) || Number(b.stepIndex ?? -1) - Number(a.stepIndex ?? -1) || Number(b.id) - Number(a.id)).slice(0, 300);
+    return res.json({ ok: true, listingId, viewer: isSeller ? "seller" : "buyer", viewerBidStatus, viewerBidCurrentCents: latestOwn?.currentBidCents ?? 0, viewerMaxBidCents: latestOwn?.maxBidCents ?? 0, currentBidCents: leader?.currentBidCents ?? listing.priceCents, history: historyItems });
   });
   app.get("/api/bids/my-history", async (req, res) => { const user = await requireUser(req, res); if (!user) return; return res.json({ ok: true, history: await getBidHistoryForUser(user.id) }); });
   app.get("/api/bids/stream", async (req, res) => {
@@ -130,7 +148,31 @@ export function registerBiddingRoutes(app: Express) {
     req.on("close", () => { closed = true; clearInterval(snapshotPoller); clearInterval(heartbeat); unsubscribe(); });
   });
   app.get("/api/bids/current", async (req, res) => { await settleExpiredAuctions(); const listingId = String(req.query.listingId ?? ""); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const rows = await activeForListing(db, listingId); const currentBidCents = rows.reduce((highest, row) => Math.max(highest, row.currentBidCents), 0); return res.json({ ok: true, listingId, currentBidCents, hasBids: rows.length > 0 }); });
-  app.get("/api/bids/summary", async (req, res) => { const user = await requireUser(req, res); if (!user) return; await settleExpiredAuctions(); const listingId = String(req.query.listingId ?? ""); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0]; if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." }); if (user.role !== "admin" && listing.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller can view the auction summary." }); const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.currentBidCents), desc(proxyBids.createdAt)); const leader = selectAuctionSummaryBid(rows); const leaderUser = leader ? (await db.select({ name: users.name }).from(users).where(eq(users.id, leader.userId)).limit(1))[0] : undefined; return res.json({ ok: true, listingId, bidCount: rows.length, activeBidCount: rows.filter((row) => row.status === "active").length, currentBidCents: leader?.currentBidCents ?? listing.priceCents, leadingBidder: leader ? { userId: leader.userId, name: leaderUser?.name ?? `Bidder ${leader.userId}`, status: leader.status, maxBidCents: leader.maxBidCents } : null }); });
+  app.get("/api/bids/summary", async (req, res) => {
+    const user = await requireUser(req, res); if (!user) return;
+    await settleExpiredAuctions();
+    const listingId = String(req.query.listingId ?? "");
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+    if (!listing) return res.status(404).json({ ok: false, error: "Auction listing not found." });
+    if (user.role !== "admin" && listing.ownerId !== user.id) return res.status(403).json({ ok: false, error: "Only the seller can view the auction summary." });
+    const rows = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listingId)).orderBy(desc(proxyBids.currentBidCents), desc(proxyBids.createdAt));
+    const batches = await db.select().from(auctionBidEventBatches).where(eq(auctionBidEventBatches.listingId, listingId));
+    const representedProxyIds = new Set<number>();
+    let eventCount = 0;
+    for (const batch of batches) {
+      try {
+        const events = JSON.parse(batch.eventsJson);
+        if (!Array.isArray(events)) continue;
+        eventCount += events.length;
+        for (const event of events) if (Number.isInteger(Number(event.proxyBidId))) representedProxyIds.add(Number(event.proxyBidId));
+      } catch { /* ignore malformed historic event batches */ }
+    }
+    const legacyBidCount = rows.filter((row) => !representedProxyIds.has(row.id)).length;
+    const leader = selectAuctionSummaryBid(rows);
+    const leaderUser = leader ? (await db.select({ name: users.name }).from(users).where(eq(users.id, leader.userId)).limit(1))[0] : undefined;
+    return res.json({ ok: true, listingId, bidCount: eventCount + legacyBidCount, activeBidCount: rows.filter((row) => row.status === "active").length, currentBidCents: leader?.currentBidCents ?? listing.priceCents, leadingBidder: leader ? { userId: leader.userId, name: leaderUser?.name ?? `Bidder ${leader.userId}`, status: leader.status, maxBidCents: leader.maxBidCents } : null });
+  });
   app.get("/api/bids/proxy", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     const listingId = String(req.query.listingId ?? "");
@@ -165,6 +207,7 @@ export function registerBiddingRoutes(app: Express) {
     const latitude = Number(delivery.latitude); const longitude = Number(delivery.longitude);
     if (!cancellationAllowed && (req.body?.autoCheckoutConsent !== true || !/^[+0-9()\-\s]{7,32}$/.test(phone) || !province || !municipality || !addressDetails || !Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) return res.status(400).json({ ok: false, error: "This auction requires your explicit auto-checkout consent, phone, delivery address, and valid map pin before bidding." });
     const sellerMinimumIncrement = Math.max(100, listing.minimumIncrementCents ?? 100);
+    if (mode === "proxy" && incrementCents < sellerMinimumIncrement) return res.status(400).json({ ok: false, error: `Your automatic increment must be at least the seller minimum of ${pesos(sellerMinimumIncrement)}.` });
     if (mode === "simple") { maxBidCents = initialBidCents; incrementCents = sellerMinimumIncrement; }
     if (mode === "simple" && incrementCents < sellerMinimumIncrement) return res.status(400).json({ ok: false, error: `Your bid must follow the seller minimum increment of ${pesos(sellerMinimumIncrement)}.` });
     if (maxBidCents < initialBidCents) return res.status(400).json({ ok: false, error: "Your maximum bid must be at least your opening bid." });
@@ -179,9 +222,11 @@ export function registerBiddingRoutes(app: Express) {
       const heldOnThisListing = allHolds.filter((row) => row.listingId === listingId).reduce((sum, row) => sum + Math.max(0, row.reservedCents ?? 0), 0);
       const available = getSpendableWalletCents(account.walletCents, heldElsewhere);
       if (maxBidCents > available) return { error: `Your maximum bid cannot exceed your spendable e-wallet balance of ${pesos(available)}.`, status: 400 as const };
-      const currentRows = await tx.select().from(proxyBids).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active")));
+      const priorBids = await tx.select().from(proxyBids).where(eq(proxyBids.listingId, listingId));
+      const currentRows = priorBids.filter((row) => row.status === "active");
+      const priorCompetitor = rankCurrentProxyBids(priorBids).find((row) => row.userId !== user.id);
       const currentBidCents = currentRows.reduce((highest, row) => Math.max(highest, row.currentBidCents), listing.priceCents);
-      const requiredBid = currentRows.length ? currentBidCents + sellerMinimumIncrement : listing.priceCents;
+      const requiredBid = getMinimumNextBidCents(currentBidCents, listing.priceCents, sellerMinimumIncrement, currentRows.length > 0);
       if (maxBidCents < requiredBid) return { error: `Your maximum bid is below the next increment of ${pesos(requiredBid)}.`, status: 409 as const };
       if (initialBidCents < requiredBid) return { error: `Your bid must be at least ${pesos(requiredBid)}.`, status: 400 as const };
       if (heldOnThisListing > 0) await tx.update(proxyBids).set({ reservedCents: 0 }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.userId, user.id)));
@@ -198,6 +243,15 @@ export function registerBiddingRoutes(app: Express) {
       const proxies = rankCurrentProxyBids(allBids);
       const winner = proxies[0]; const runner = proxies[1];
       const winningCurrent = calculateProxyWinningBidCents(winner, runner, initialBidCents, listing.priceCents, sellerMinimumIncrement);
+      const proxyBidLadder = buildProxyBidLadderEvents(
+        { proxyBidId: created.id, userId: user.id, maxBidCents, incrementCents },
+        priorCompetitor ? { proxyBidId: priorCompetitor.id, userId: priorCompetitor.userId, maxBidCents: priorCompetitor.maxBidCents, incrementCents: priorCompetitor.incrementCents ?? sellerMinimumIncrement } : undefined,
+        winner.userId,
+        initialBidCents,
+        winningCurrent,
+        sellerMinimumIncrement,
+      );
+      await tx.insert(auctionBidEventBatches).values({ listingId, submittedProxyBidId: created.id, eventsJson: JSON.stringify(proxyBidLadder) });
       await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0 }).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active")));
       await tx.update(proxyBids).set({ status: "active", currentBidCents: winningCurrent }).where(eq(proxyBids.id, winner.id));
       return { createdId: created.id, proxies, winner, winningCurrent, availableBefore: available };

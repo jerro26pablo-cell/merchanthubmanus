@@ -141,6 +141,13 @@
       "when": 1791719488320,
       "tag": "0019_two_listing_types",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1791722138312,
+      "tag": "0020_stepwise_proxy_bid_history",
+      "breakpoints": true
     }
   ]
 }

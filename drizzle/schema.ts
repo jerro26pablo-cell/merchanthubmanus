@@ -1,4 +1,4 @@
-import { int, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { index, int, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -58,6 +58,14 @@ export const proxyBids = mysqlTable("proxy_bids", {
 });
 
 export type ProxyBid = typeof proxyBids.$inferSelect;
+
+export const auctionBidEventBatches = mysqlTable("auction_bid_event_batches", {
+  id: int("id").autoincrement().primaryKey(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  submittedProxyBidId: int("submittedProxyBidId").notNull(),
+  eventsJson: longtext("eventsJson").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ listingSequence: index("auction_bid_event_batches_listing_seq_idx").on(table.listingId, table.id) }));
 
 export const listingsOwned = mysqlTable("listings_owned", {
   id: int("id").autoincrement().primaryKey(),

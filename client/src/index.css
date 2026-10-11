@@ -601,3 +601,5 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .bid-cancellation-reason { display:block; margin-top:4px; color:#a25445; font-size:10px; line-height:1.4; }
 
 .listing-photo-strip { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }.edit-photo-item { position:relative; display:flex; align-items:flex-start; }.edit-photo-item .icon-button { position:absolute; top:6px; right:6px; width:24px; height:24px; padding:4px; color:#fff; border-color:rgba(255,255,255,.4); background:rgba(24,35,41,.72); }
+
+.bid-method { display:block; margin-top:3px; color:#71807d; font-size:9px; font-weight:650; }

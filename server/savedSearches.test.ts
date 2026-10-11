@@ -11,6 +11,11 @@ describe("saved search matching", () => {
     expect(matchesSavedSearch({ query: "camera", filter: "All items" }, listing, polomolok)).toBe(false);
   });
 
+  it("lets an unrestricted All items search match future listings everywhere", () => {
+    expect(matchesSavedSearch({ query: "", filter: "All items" }, listing, polomolok)).toBe(true);
+    expect(matchesSavedSearch({ query: "", filter: "All items" }, { title: "Desk lamp", description: "LED reading light", category: "Home", listingType: "Auction" }, { province: "Cebu", municipality: "Cebu City" })).toBe(true);
+  });
+
   it("honors saved listing type, category, and exact store location filters", () => {
     expect(matchesSavedSearch({ query: "hoodie", filter: "Fashion", province: "South Cotabato", municipality: "Polomolok" }, listing, polomolok)).toBe(true);
     expect(matchesSavedSearch({ query: "hoodie", filter: "Auction" }, listing, polomolok)).toBe(false);

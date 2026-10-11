@@ -7,6 +7,7 @@ import { createNotification, settleExpiredAuctions } from "./notifications";
 import { notifySavedSearchMatches } from "./savedSearches";
 import { publishAuctionUpdate } from "./auctionEvents";
 import { notifyFollowedStoreUpcomingAuction } from "./stores";
+import { listingTypeChangeBlock } from "./listingEditRules";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -108,63 +109,133 @@ export const registerListingRoutes = (app: Express) => {
     await settleExpiredAuctions();
     const row = (await db.select().from(listingsOwned).where(and(eq(listingsOwned.listingId, req.params.listingId), eq(listingsOwned.ownerId, user.id))).limit(1))[0];
     if (!row) return res.status(404).json({ ok: false, error: "Listing not found or you do not own it." });
-    const nextLifecycle = req.body?.lifecycle;
-    const requestedListingType = req.body?.listingType;
+    const body = req.body ?? {};
+    const nextLifecycle = body.lifecycle;
+    const requestedListingType = body.listingType;
     if (requestedListingType !== undefined && requestedListingType !== "Auction" && requestedListingType !== "Buy now") return res.status(400).json({ ok: false, error: "Listing type must be Buy now or Auction." });
-    if (requestedListingType !== undefined && requestedListingType !== row.listingType) return res.status(409).json({ ok: false, error: "A listing's format cannot be changed after creation. Create a new listing instead." });
     if (nextLifecycle && !["draft", "official", "canceled"].includes(nextLifecycle)) return res.status(400).json({ ok: false, error: "Invalid listing state." });
+    const targetType = requestedListingType ?? row.listingType;
+    const typeChanged = targetType !== row.listingType;
     const pendingOffer = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "offered"))).limit(1))[0];
-    if (pendingOffer && (req.body?.stock !== undefined || req.body?.auctionEndAt !== undefined || nextLifecycle !== undefined)) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before changing stock or listing status." });
+    if (pendingOffer && Object.keys(body).length > 0) return res.status(409).json({ ok: false, error: "Resolve the pending second-chance offer before editing this listing." });
+    let hasBidHistory = false;
+    if (typeChanged || (body.priceCents !== undefined && row.listingType === "Auction")) {
+      hasBidHistory = Boolean((await db.select({ id: proxyBids.id }).from(proxyBids).where(eq(proxyBids.listingId, row.listingId)).limit(1))[0]);
+    }
+    if (typeChanged) {
+      const blocked = listingTypeChangeBlock(row.lifecycle, hasBidHistory);
+      if (blocked === "closed") return res.status(409).json({ ok: false, error: "Listing type can only be changed while a listing is a draft or active." });
+      if (blocked === "bids") return res.status(409).json({ ok: false, error: "Listing type cannot be changed after an auction has bidding history." });
+    }
+    if (hasBidHistory && row.listingType === "Auction") {
+      const startAt = body.auctionStartAt == null || body.auctionStartAt === "" ? null : new Date(String(body.auctionStartAt)).getTime();
+      const rowStartAt = row.auctionStartAt?.getTime() ?? null;
+      const changesProtectedTerms = (body.priceCents !== undefined && Math.round(Number(body.priceCents)) !== row.priceCents)
+        || (body.reserveThresholdCents !== undefined && Number(body.reserveThresholdCents) !== (row.reserveThresholdCents ?? 0))
+        || (body.minimumIncrementCents !== undefined && Number(body.minimumIncrementCents) !== (row.minimumIncrementCents ?? 1000))
+        || (body.antiSnipeSeconds !== undefined && Number(body.antiSnipeSeconds) !== (row.antiSnipeSeconds ?? 120))
+        || (body.winnerCancellationAllowed !== undefined && Number(Boolean(body.winnerCancellationAllowed)) !== Number(Boolean(row.winnerCancellationAllowed)))
+        || (Object.prototype.hasOwnProperty.call(body, "auctionStartAt") && (startAt === null ? rowStartAt !== null : rowStartAt === null || !Number.isFinite(startAt) || Math.abs(startAt - rowStartAt) >= 60_000));
+      if (changesProtectedTerms) return res.status(409).json({ ok: false, error: "Auction terms cannot be changed after bidding starts. You can still edit the description, category, and photos." });
+    }
     if (nextLifecycle === "official" && ["auction-ended", "sold", "canceled"].includes(row.lifecycle) && row.listingType === "Auction") return res.status(409).json({ ok: false, error: "Use Re-auction to start a new auction cycle." });
-    const nextStock = req.body?.stock === undefined ? row.stock : Math.round(Number(req.body.stock));
+
+    const nextStock = body.stock === undefined ? row.stock : Number(body.stock);
+    if (body.stock !== undefined && (!Number.isInteger(nextStock) || nextStock < 0)) return res.status(400).json({ ok: false, error: "Quantity must be a whole number of zero or more." });
     if (nextLifecycle === "official" && nextStock <= 0) return res.status(409).json({ ok: false, error: "Add available stock before making this listing official." });
+
     const updates: Partial<typeof listingsOwned.$inferInsert> = {};
-    for (const key of ["title", "description", "category", "subcategory", "listingType", "condition", "reserveThresholdCents", "minimumIncrementCents", "antiSnipeSeconds", "stock"] as const) if (req.body?.[key] !== undefined) (updates as any)[key] = req.body[key];
-    if (req.body?.priceCents !== undefined) {
-      const priceCents = Math.round(Number(req.body.priceCents));
-      if (!Number.isFinite(priceCents) || priceCents <= 0) return res.status(400).json({ ok: false, error: "Enter a valid listing price greater than zero." });
+    const textField = (key: "title" | "description" | "category" | "subcategory", maxLength: number) => {
+      if (body[key] === undefined) return undefined;
+      if (key === "subcategory" && (body[key] === null || String(body[key]).trim() === "")) return null;
+      const value = String(body[key]).trim();
+      if (!value || value.length > maxLength) return null;
+      return value;
+    };
+    for (const [key, max] of [["title", 180], ["description", 65535], ["category", 80], ["subcategory", 100]] as const) {
+      if (key === "subcategory" && body[key] !== undefined && (body[key] === null || String(body[key]).trim() === "")) { updates.subcategory = null; continue; }
+      const value = textField(key, max);
+      if (value === null) return res.status(400).json({ ok: false, error: `${key[0].toUpperCase()}${key.slice(1)} is required and must be within its maximum length.` });
+      if (value !== undefined) (updates as any)[key] = value;
+    }
+    if (body.condition !== undefined) {
+      if (!["New", "Like new", "Good"].includes(body.condition)) return res.status(400).json({ ok: false, error: "Choose a valid item condition." });
+      updates.condition = body.condition;
+    }
+    if (body.stock !== undefined) updates.stock = nextStock;
+    if (requestedListingType !== undefined) updates.listingType = requestedListingType;
+    if (body.priceCents !== undefined) {
+      const priceCents = Number(body.priceCents);
+      if (!Number.isInteger(priceCents) || priceCents <= 0) return res.status(400).json({ ok: false, error: "Enter a valid listing price greater than zero." });
       updates.priceCents = priceCents;
     }
-    if (req.body?.auctionEndAt !== undefined) {
-      if (row.lifecycle !== "official" || row.listingType !== "Auction") return res.status(409).json({ ok: false, error: "Only a live official auction can have its deadline changed." });
-      const auctionEndAt = new Date(String(req.body.auctionEndAt));
-      if (Number.isNaN(auctionEndAt.getTime()) || auctionEndAt.getTime() <= Date.now()) return res.status(400).json({ ok: false, error: "Choose a future auction closing time." });
-      updates.auctionEndAt = auctionEndAt;
+    if (Array.isArray(body.photos)) {
+      const photos = body.photos.filter((item: unknown): item is string => typeof item === "string").slice(0, 5);
+      if (photos.some((photo: string) => photo.length > 7_200_000)) return res.status(400).json({ ok: false, error: "Each product photo must be 5 MB or smaller." });
+      updates.imageData = JSON.stringify(photos);
+    }
+
+    if (targetType === "Auction") {
+      const hasStartField = Object.prototype.hasOwnProperty.call(body, "auctionStartAt");
+      const hasEndField = Object.prototype.hasOwnProperty.call(body, "auctionEndAt");
+      const dateValue = (value: unknown): Date | null => value == null || value === "" ? null : new Date(String(value));
+      let startAt = hasStartField ? dateValue(body.auctionStartAt) : typeChanged ? null : row.auctionStartAt;
+      let endAt = hasEndField ? dateValue(body.auctionEndAt) : typeChanged ? null : row.auctionEndAt;
+      if ((startAt && Number.isNaN(startAt.getTime())) || (endAt && Number.isNaN(endAt.getTime()))) return res.status(400).json({ ok: false, error: "Enter valid auction start and end times." });
+      if (typeChanged && !endAt) return res.status(400).json({ ok: false, error: "Set a closing time before changing this listing to Auction." });
+      if (hasEndField && (!endAt || endAt.getTime() <= Date.now())) return res.status(400).json({ ok: false, error: "Choose a future auction closing time." });
+      if (startAt && endAt && startAt.getTime() >= endAt.getTime()) return res.status(400).json({ ok: false, error: "The auction must start before it closes." });
+      if (typeChanged && startAt && startAt.getTime() <= Date.now()) return res.status(400).json({ ok: false, error: "A new auction start time must be in the future." });
+      if (nextLifecycle === "official" && (!endAt || endAt.getTime() <= Date.now())) {
+        endAt = new Date(Math.max(Date.now(), startAt?.getTime() ?? Date.now()) + 24 * 60 * 60 * 1000);
+        updates.settledAt = null;
+      }
+      if (typeChanged || hasStartField) updates.auctionStartAt = startAt;
+      if (typeChanged || hasEndField || nextLifecycle === "official") updates.auctionEndAt = endAt;
+      const reserveCents = body.reserveThresholdCents === undefined ? typeChanged ? 0 : row.reserveThresholdCents ?? 0 : Number(body.reserveThresholdCents);
+      const incrementCents = body.minimumIncrementCents === undefined ? typeChanged ? 1000 : row.minimumIncrementCents ?? 1000 : Number(body.minimumIncrementCents);
+      const antiSnipeSeconds = body.antiSnipeSeconds === undefined ? typeChanged ? 120 : row.antiSnipeSeconds ?? 120 : Number(body.antiSnipeSeconds);
+      if (!Number.isInteger(reserveCents) || reserveCents < 0 || !Number.isInteger(incrementCents) || incrementCents <= 0 || !Number.isInteger(antiSnipeSeconds) || antiSnipeSeconds < 0) return res.status(400).json({ ok: false, error: "Enter a valid reserve, minimum increment, and anti-sniping interval." });
+      if (typeChanged || body.reserveThresholdCents !== undefined) updates.reserveThresholdCents = reserveCents;
+      if (typeChanged || body.minimumIncrementCents !== undefined) updates.minimumIncrementCents = incrementCents;
+      if (typeChanged || body.antiSnipeSeconds !== undefined) updates.antiSnipeSeconds = antiSnipeSeconds;
+      if (body.winnerCancellationAllowed !== undefined && typeof body.winnerCancellationAllowed !== "boolean") return res.status(400).json({ ok: false, error: "Choose a valid winner-cancellation policy." });
+      if (typeChanged || body.winnerCancellationAllowed !== undefined) updates.winnerCancellationAllowed = (body.winnerCancellationAllowed ?? (typeChanged ? true : Boolean(row.winnerCancellationAllowed))) ? 1 : 0;
+      if (typeChanged || hasEndField) updates.settledAt = null;
+    } else if (typeChanged) {
+      updates.auctionStartAt = null;
+      updates.auctionEndAt = null;
+      updates.reserveThresholdCents = null;
+      updates.minimumIncrementCents = null;
+      updates.antiSnipeSeconds = 0;
+      updates.winnerCancellationAllowed = 1;
       updates.settledAt = null;
     }
-    if (Array.isArray(req.body?.photos)) updates.imageData = JSON.stringify(req.body.photos.filter((item: unknown) => typeof item === "string").slice(0, 5));
+
     if (nextLifecycle) updates.lifecycle = nextLifecycle;
-    if (req.body?.stock !== undefined && nextStock <= 0 && row.lifecycle === "official") {
+    if (body.stock !== undefined && nextStock <= 0 && row.lifecycle === "official") {
       const activeBid = (await db.select({ id: proxyBids.id }).from(proxyBids).where(and(eq(proxyBids.listingId, row.listingId), eq(proxyBids.status, "active"))).limit(1))[0];
       if (!activeBid) updates.lifecycle = "draft";
-    }
-    if (nextLifecycle === "official" && row.listingType === "Auction" && (!row.auctionEndAt || row.auctionEndAt.getTime() <= Date.now())) {
-      updates.auctionEndAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      updates.settledAt = null;
     }
     await db.update(listingsOwned).set(updates).where(eq(listingsOwned.listingId, req.params.listingId));
     const updated = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, req.params.listingId)).limit(1))[0];
     if (updated) {
       const priceChanged = row.priceCents !== updated.priceCents;
       const stockChanged = row.stock !== updated.stock;
-      if (priceChanged) {
-        await db.insert(listingPriceHistory).values({ listingId: updated.listingId, sellerId: updated.ownerId, previousPriceCents: row.priceCents, newPriceCents: updated.priceCents });
-      }
+      if (priceChanged) await db.insert(listingPriceHistory).values({ listingId: updated.listingId, sellerId: updated.ownerId, previousPriceCents: row.priceCents, newPriceCents: updated.priceCents });
       if (priceChanged || stockChanged) {
         const watchers = await db.select({ userId: wishlists.userId }).from(wishlists).where(eq(wishlists.listingId, updated.listingId));
         const previous = row.priceCents;
         const next = updated.priceCents;
         const direction = next > previous ? "increased" : next < previous ? "dropped" : "changed";
-        const label = "Listing price";
-        const message = priceChanged ? `“${updated.title}” ${label.toLowerCase()} ${direction} from ₱${(previous / 100).toLocaleString("en-PH")} to ₱${(next / 100).toLocaleString("en-PH")}.` : `“${updated.title}” has an inventory update in your saved items.`;
+        const message = priceChanged ? `“${updated.title}” listing price ${direction} from ₱${(previous / 100).toLocaleString("en-PH")} to ₱${(next / 100).toLocaleString("en-PH")}.` : `“${updated.title}” has an inventory update in your saved items.`;
         const title = priceChanged ? `Saved item price ${direction}` : "Inventory update on a saved item";
         await Promise.all(watchers.filter((watcher) => watcher.userId !== updated.ownerId).map((watcher) => createNotification(watcher.userId, "system", title, message, updated.listingId)));
       }
-      if (row.lifecycle !== "official" && updated.lifecycle === "official") {
-        await notifySavedSearchMatches(updated);
-        await notifyFollowedStoreUpcomingAuction(updated);
-      }
-      if (updates.auctionStartAt !== undefined || updates.auctionEndAt !== undefined || updates.lifecycle !== undefined) publishAuctionUpdate(updated.listingId);
+      const searchCriteriaChanged = row.title !== updated.title || row.description !== updated.description || row.category !== updated.category || row.listingType !== updated.listingType;
+      if (updated.lifecycle === "official" && (row.lifecycle !== "official" || searchCriteriaChanged)) await notifySavedSearchMatches(updated);
+      if (updated.lifecycle === "official" && updated.listingType === "Auction" && (row.lifecycle !== "official" || row.listingType !== updated.listingType || row.auctionStartAt?.getTime() !== updated.auctionStartAt?.getTime())) await notifyFollowedStoreUpcomingAuction(updated);
+      if (updates.auctionStartAt !== undefined || updates.auctionEndAt !== undefined || updates.lifecycle !== undefined || updates.listingType !== undefined) publishAuctionUpdate(updated.listingId);
     }
     return res.json({ ok: true, listing: updated ? toListing(updated, user.storeName || user.name, user.province, user.municipality) : null });
   });

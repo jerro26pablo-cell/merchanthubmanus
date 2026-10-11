@@ -49,7 +49,6 @@ export function registerSavedSearchRoutes(app: Express) {
     if (filter.toLocaleLowerCase() === "both") return res.status(400).json({ ok: false, error: "Choose Buy now or Auction as the listing type filter." });
     const province = normalize(req.body?.province, 120) || null;
     const municipality = normalize(req.body?.municipality, 120) || null;
-    if (!query && filter === "All items" && !province && !municipality) return res.status(400).json({ ok: false, error: "Add a search term, choose a filter, or select a location before saving." });
     if (municipality && !province) return res.status(400).json({ ok: false, error: "Choose a province for the municipality filter." });
     const locationName = [municipality, province].filter(Boolean).join(", ");
     const name = normalize(req.body?.name, 120) || [query, filter === "All items" ? "" : filter, locationName].filter(Boolean).join(" · ") || "All marketplace items";

@@ -148,12 +148,17 @@ describe("automatic proxy bidding", () => {
   });
 
   it("records every alternating ten-peso proxy response from the new bid through the winner's next step", () => {
+    const buyer1 = bid(2, 101, "active", 50000, 12000, "2026-10-02T10:01:00Z", 1000);
+    const buyer2 = bid(1, 202, "outbid", 40000, 0, "2026-10-02T10:00:00Z", 1000);
+    const ranked = rankCurrentProxyBids([buyer1, buyer2]);
+    const winningBidCents = calculateProxyWinningBidCents(ranked[0], ranked[1], 12000, 10000, 1000);
+    expect(winningBidCents).toBe(41000);
     const ladder = buildProxyBidLadderEvents(
-      { proxyBidId: 2, userId: 101, maxBidCents: 50000, incrementCents: 1000 },
-      { proxyBidId: 1, userId: 202, maxBidCents: 40000, incrementCents: 1000 },
-      101,
+      { proxyBidId: buyer1.id, userId: buyer1.userId, maxBidCents: buyer1.maxBidCents, incrementCents: buyer1.incrementCents ?? 1000 },
+      { proxyBidId: buyer2.id, userId: buyer2.userId, maxBidCents: buyer2.maxBidCents, incrementCents: buyer2.incrementCents ?? 1000 },
+      ranked[0].userId,
       12000,
-      41000,
+      winningBidCents,
       1000,
     );
     const opening = buildProxyBidLadderEvents(

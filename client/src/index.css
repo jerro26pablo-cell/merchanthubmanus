@@ -603,3 +603,40 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .listing-photo-strip { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }.edit-photo-item { position:relative; display:flex; align-items:flex-start; }.edit-photo-item .icon-button { position:absolute; top:6px; right:6px; width:24px; height:24px; padding:4px; color:#fff; border-color:rgba(255,255,255,.4); background:rgba(24,35,41,.72); }
 
 .bid-method { display:block; margin-top:3px; color:#71807d; font-size:9px; font-weight:650; }
+
+/* Keep the Marketplace refinements within the available viewport width. */
+.market-location-filter {
+  display: grid;
+  grid-template-columns: minmax(190px, .85fr) repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 16px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.market-location-filter > div { min-width: 0; }
+.market-location-filter > div:first-child { grid-row: span 2; min-width: 0; }
+.market-location-filter .field-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+  margin-top: 0;
+  gap: 9px;
+}
+.market-location-filter .field-label,
+.market-location-filter .field-label select,
+.market-location-filter .field-label input { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.marketplace-filter-toolbar { flex-wrap: wrap; align-items: flex-start; }
+.marketplace-filter-toolbar .filter-tabs { flex: 1 1 280px; min-width: 0; }
+.marketplace-filter-toolbar .toolbar-actions { flex: 0 1 auto; min-width: 0; }
+@media (max-width: 1000px) {
+  .market-location-filter { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .market-location-filter > div:first-child { grid-column: 1 / -1; grid-row: auto; }
+}
+@media (max-width: 680px) {
+  .market-location-filter { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 16px; }
+  .market-location-filter > div:first-child { grid-column: auto; }
+}
+@media (max-width: 420px) {
+  .market-location-filter .field-two { grid-template-columns: minmax(0, 1fr); }
+  .marketplace-filter-toolbar .toolbar-actions { width: 100%; justify-content: flex-end; }
+}

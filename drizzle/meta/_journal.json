@@ -148,6 +148,20 @@
       "when": 1791722138312,
       "tag": "0020_stepwise_proxy_bid_history",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1791728032000,
+      "tag": "0021_size_variants",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1791810000000,
+      "tag": "0022_color_variants",
+      "breakpoints": true
     }
   ]
 }

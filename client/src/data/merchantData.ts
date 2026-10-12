@@ -40,6 +40,8 @@ export type Listing = {
   sellerRating: number;
   condition: "New" | "Like new" | "Good";
   stock: number;
+  /** Per-size prices and quantities; omitted for listings without size variants. */
+  sizeVariants?: { size: string; color?: string; price: number; stock: number }[];
   reserveMet?: boolean;
   featured?: boolean;
   accent: string;

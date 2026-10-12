@@ -640,3 +640,57 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
   .market-location-filter .field-two { grid-template-columns: minmax(0, 1fr); }
   .marketplace-filter-toolbar .toolbar-actions { width: 100%; justify-content: flex-end; }
 }
+
+
+/* Per-size listing variants */
+.size-variant-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--paper) 92%, #f0f5f8);
+}
+.size-variant-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.size-variant-heading > div { display: grid; gap: 4px; }
+.size-variant-heading small,
+.size-variant-empty { color: var(--muted-dark); font-size: 12px; line-height: 1.45; }
+.size-add-button { flex: 0 0 auto; white-space: nowrap; }
+.size-variant-list { display: grid; gap: 10px; }
+.size-variant-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper);
+}
+.size-remove-button { margin-bottom: 7px; }
+.size-variant-empty { margin: 0; }
+.detail-size-picker,
+.checkout-size-picker { width: 100%; margin: 0 0 12px; }
+.detail-size-picker select,
+.checkout-size-picker select { width: 100%; margin-top: 6px; }
+.checkout-size-picker { max-width: 270px; }
+
+@media (max-width: 720px) {
+  .size-variant-row { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+  .size-variant-row .field-label:nth-child(2) { min-width: 0; }
+  .size-variant-heading { flex-direction: column; }
+  .size-add-button { align-self: flex-start; }
+}
+@media (max-width: 460px) {
+  .size-variant-editor { padding: 12px; }
+  .size-variant-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .size-remove-button { justify-self: end; margin: 0; }
+}
+
+.listing-size-summary { display: block; margin: -4px 0 9px 34px; color: var(--muted-dark); font-size: 10px; line-height: 1.4; }

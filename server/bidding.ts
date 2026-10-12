@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "./db";
-import { auctionBidEventBatches, bidCancellationRequests, commerceOrders, listingsOwned, proxyBids, users } from "../drizzle/schema";
+import { auctionBidEventBatches, bidCancellationRequests, commerceOrders, listingSizeVariants, listingsOwned, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
 import { createNotification, settleExpiredAuctions } from "./notifications";
 import { buildProxyBidLadderEvents, calculateProxyWinningBidCents, createBidderLabels, getMinimumNextBidCents, getAuctionPhase, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition, resolveWinnerCancellation } from "./auctionState";
@@ -284,6 +284,7 @@ export function registerBiddingRoutes(app: Express) {
       const existing = (await tx.select({ orderId: commerceOrders.orderId }).from(commerceOrders).where(eq(commerceOrders.auctionBidId, bid.id)).limit(1))[0];
       if (existing) { await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id)); return { orderId: existing.orderId, amountCents: bid.currentBidCents || bid.maxBidCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: true }; }
       const amountCents = bid.currentBidCents || bid.maxBidCents;
+      const auctionSize = (await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listing.listingId)).limit(1))[0];
       if (payment === "E-wallet") {
         const account = (await tx.select({ walletCents: users.walletCents }).from(users).where(eq(users.id, user.id)).limit(1))[0];
         const holds = await tx.select({ reservedCents: proxyBids.reservedCents }).from(proxyBids).where(eq(proxyBids.userId, user.id));
@@ -293,7 +294,7 @@ export function registerBiddingRoutes(app: Express) {
         if (debited[0]?.affectedRows === 0) return { error: "Wallet balance changed during checkout. Refresh and try again.", status: 409 as const };
       }
       const orderId = `MH-AUC-${bid.id}-${Date.now()}`;
-      await tx.insert(commerceOrders).values({ orderId, listingId: listing.listingId, auctionBidId: bid.id, buyerId: user.id, sellerId: listing.ownerId, quantity: 1, amountCents, payment, province, municipality, addressDetails, contactNumber: phone, destinationLatitude: latitude == null ? null : String(latitude), destinationLongitude: longitude == null ? null : String(longitude), status: "Processing" });
+      await tx.insert(commerceOrders).values({ orderId, listingId: listing.listingId, auctionBidId: bid.id, buyerId: user.id, sellerId: listing.ownerId, quantity: 1, variantSize: auctionSize?.size ?? null, variantColor: auctionSize?.color || null, unitPriceCents: amountCents, amountCents, payment, province, municipality, addressDetails, contactNumber: phone, destinationLatitude: latitude == null ? null : String(latitude), destinationLongitude: longitude == null ? null : String(longitude), status: "Processing" });
       await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id));
       return { orderId, amountCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: false };
     });
@@ -325,6 +326,8 @@ export function registerBiddingRoutes(app: Express) {
         // if the bid/order claim loses a race, throwing rolls back the stock change too.
         const restored = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
         if (restored[0]?.affectedRows === 0) return { error: "The listing is no longer eligible for cancellation.", status: 409 as const };
+        const auctionSizeRows = await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listing.listingId));
+        if (auctionSizeRows.length) await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} + 1` }).where(eq(listingSizeVariants.id, auctionSizeRows[0].id));
         const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
         if (cancelled[0]?.affectedRows === 0) throw new Error("WINNING_BID_ALREADY_RESOLVED");
         if (order) {
@@ -387,10 +390,16 @@ export function registerBiddingRoutes(app: Express) {
         if (!listing || !["auction-ended", "canceled"].includes(listing.lifecycle) || listing.stock <= 0) return { error: "This second-chance offer is no longer available.", status: 409 as const };
         if (listing.winnerCancellationAllowed === 0) return { error: "This auction does not allow change-of-mind cancellation, so the second-chance offer is not available.", status: 409 as const };
         const amountCents = runner.currentBidCents || runner.maxBidCents;
+        const auctionSizeRows = await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listingId));
+        if (auctionSizeRows.length && auctionSizeRows[0].stock <= 0) return { error: "The auction size is no longer in stock.", status: 409 as const };
         const bidChanged = await tx.update(proxyBids).set({ status: "won", currentBidCents: amountCents }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
         if (bidChanged[0]?.affectedRows === 0) return { error: "This offer has already been answered.", status: 409 as const };
-        const listingChanged = await tx.update(listingsOwned).set({ lifecycle: "sold", stock: listing.stock - 1 }).where(and(eq(listingsOwned.listingId, listingId), eq(listingsOwned.lifecycle, "auction-ended"), eq(listingsOwned.stock, listing.stock)));
+        const listingChanged = await tx.update(listingsOwned).set({ lifecycle: "sold", stock: listing.stock - 1 }).where(and(eq(listingsOwned.listingId, listingId), inArray(listingsOwned.lifecycle, ["auction-ended", "canceled"]), eq(listingsOwned.stock, listing.stock)));
         if (listingChanged[0]?.affectedRows === 0) throw new Error("SECOND_CHANCE_LISTING_CLAIMED");
+        if (auctionSizeRows.length) {
+          const sizeMoved = await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} - 1` }).where(and(eq(listingSizeVariants.id, auctionSizeRows[0].id), gte(listingSizeVariants.stock, 1)));
+          if (sizeMoved[0]?.affectedRows === 0) throw new Error("SECOND_CHANCE_LISTING_CLAIMED");
+        }
         return { listing, amountCents };
       });
     } catch (error) {

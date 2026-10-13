@@ -694,3 +694,12 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 }
 
 .listing-size-summary { display: block; margin: -4px 0 9px 34px; color: var(--muted-dark); font-size: 10px; line-height: 1.4; }
+
+
+.inventory-stock-report { display: grid; gap: 5px; margin: 0 0 10px; }
+.inventory-stock-report > .field-help { margin: 0; }
+.inventory-variant-report { color: var(--muted-dark); font-size: 12px; line-height: 1.5; }
+.inventory-variant-report > span { display: block; }
+.inventory-variant-report ul { display: grid; gap: 2px; margin: 2px 0 0 18px; padding: 0; }
+.inventory-variant-report li { padding-left: 2px; }
+.inventory-settled-at { margin: 0; }

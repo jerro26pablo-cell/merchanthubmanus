@@ -69,6 +69,11 @@ export function rankCurrentProxyBids(bids: AuctionBidState[]): AuctionBidState[]
     .sort((a, b) => b.maxBidCents - a.maxBidCents || (capPriorityByUser.get(a.userId) ?? a.id) - (capPriorityByUser.get(b.userId) ?? b.id));
 }
 
+/** First bids must clear the opening amount by one seller increment; later bids advance from the live price. */
+export function getMinimumNextBidCents(currentBidCents: number, openingBidCents: number, sellerMinimumIncrementCents: number, hasBids: boolean): number {
+  return (hasBids ? currentBidCents : openingBidCents) + Math.max(100, sellerMinimumIncrementCents);
+}
+
 /** Determine the price reached by proxy bidding, bounded by the leading bidder's cap. */
 export function calculateProxyWinningBidCents(
   leader: AuctionBidState,
@@ -77,9 +82,48 @@ export function calculateProxyWinningBidCents(
   openingBidCents: number,
   sellerMinimumIncrementCents: number,
 ): number {
-  const increment = Math.max(100, leader.incrementCents ?? sellerMinimumIncrementCents);
+  const increment = Math.max(100, sellerMinimumIncrementCents, leader.incrementCents ?? sellerMinimumIncrementCents);
   const runnerUpPrice = runnerUp ? runnerUp.maxBidCents + increment : openingBidCents;
   return Math.min(leader.maxBidCents, Math.max(openingBidCents, submittedBidCents, runnerUpPrice));
+}
+
+export type ProxyBidLadderParticipant = { proxyBidId: number; userId: number; maxBidCents: number; incrementCents: number };
+export type ProxyBidLadderEvent = { proxyBidId: number; userId: number; amountCents: number; kind: "submitted" | "automatic" };
+
+/** Expand a proxy result into the alternating, public price steps buyers would see. */
+export function buildProxyBidLadderEvents(
+  submitted: ProxyBidLadderParticipant,
+  opponent: ProxyBidLadderParticipant | undefined,
+  winningUserId: number,
+  submittedBidCents: number,
+  winningBidCents: number,
+  sellerMinimumIncrementCents: number,
+): ProxyBidLadderEvent[] {
+  const events: ProxyBidLadderEvent[] = [{ proxyBidId: submitted.proxyBidId, userId: submitted.userId, amountCents: submittedBidCents, kind: "submitted" }];
+  if (!opponent || winningBidCents <= submittedBidCents) return events;
+  const participants = new Map<number, ProxyBidLadderParticipant>([[submitted.userId, submitted], [opponent.userId, opponent]]);
+  const otherUserId = (userId: number) => userId === submitted.userId ? opponent.userId : submitted.userId;
+  const winner = participants.get(winningUserId) ?? submitted;
+  const stepCents = Math.max(100, sellerMinimumIncrementCents, winner.incrementCents);
+  let current = submittedBidCents;
+  let turnUserId = winningUserId === submitted.userId ? opponent.userId : submitted.userId;
+  let steps = 0;
+  while (current < winningBidCents && steps < 1000) {
+    let actor = participants.get(turnUserId);
+    if (!actor || actor.maxBidCents <= current) {
+      turnUserId = otherUserId(turnUserId);
+      actor = participants.get(turnUserId);
+      if (!actor || actor.maxBidCents <= current) break;
+    }
+    const next = Math.min(current + stepCents, actor.maxBidCents, winningBidCents);
+    if (next <= current) break;
+    events.push({ proxyBidId: actor.proxyBidId, userId: actor.userId, amountCents: next, kind: "automatic" });
+    current = next;
+    turnUserId = otherUserId(actor.userId);
+    steps += 1;
+  }
+  if (current < winningBidCents) events.push({ proxyBidId: winner.proxyBidId, userId: winner.userId, amountCents: winningBidCents, kind: "automatic" });
+  return events;
 }
 
 /** Keep bidder labels stable and unique even when multiple accounts share the same name. */

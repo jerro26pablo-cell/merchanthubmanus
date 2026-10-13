@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { and, desc, eq, gte, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingsOwned, notifications, proxyBids, users } from "../drizzle/schema";
+import { commerceOrders, listingSizeVariants, listingsOwned, notifications, proxyBids, users } from "../drizzle/schema";
 import { resolveExpiredAuctionOutcome, selectSecondChanceBid } from "./auctionState";
 import { publishAuctionUpdate } from "./auctionEvents";
 import { calculateAutoAuctionCharge } from "./auctionWallet";
@@ -66,9 +66,10 @@ export async function settleExpiredAuctions() {
   ));
 
   for (const listing of expired) {
-    if (listing.listingType !== "Auction" && listing.listingType !== "Both") continue;
+    if (listing.listingType !== "Auction") continue;
     const bids = await db.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
-    const outcome = resolveExpiredAuctionOutcome(bids, listing.reserveThresholdCents, listing.stock);
+    const auctionSize = (await db.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listing.listingId)).limit(1))[0];
+    const outcome = resolveExpiredAuctionOutcome(bids, listing.reserveThresholdCents, Math.min(listing.stock, auctionSize?.stock ?? listing.stock));
     const candidateWinner = outcome.kind === "sold" ? outcome.winner : null;
     const winnerRow = candidateWinner ? bids.find((bid) => bid.id === candidateWinner.id) ?? null : null;
     const autoCheckout = Boolean(candidateWinner && listing.winnerCancellationAllowed === 0);
@@ -82,13 +83,18 @@ export async function settleExpiredAuctions() {
 
     let automaticOrderId: string | null = null;
     let automaticCheckoutFailed = false;
-    const settled = await db.transaction(async (tx) => {
+    let settled: boolean;
+    try { settled = await db.transaction(async (tx) => {
       const claimed = await tx.update(listingsOwned).set({
         lifecycle: candidateWinner ? "sold" : "auction-ended",
         settledAt: listing.settledAt ?? now,
         stock: candidateWinner ? Math.max(0, listing.stock - 1) : listing.stock,
       }).where(and(eq(listingsOwned.id, listing.id), eq(listingsOwned.lifecycle, "official"), lte(listingsOwned.auctionEndAt, now)));
       if (claimed[0]?.affectedRows === 0) return false;
+      if (candidateWinner && auctionSize) {
+        const sizeClaimed = await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} - 1` }).where(and(eq(listingSizeVariants.id, auctionSize.id), gte(listingSizeVariants.stock, 1)));
+        if (sizeClaimed[0]?.affectedRows === 0) throw new Error("AUCTION_VARIANT_STOCK_CHANGED");
+      }
 
       if (candidateWinner && autoCheckout) {
         const orderAlreadyExists = (await tx.select({ orderId: commerceOrders.orderId }).from(commerceOrders).where(eq(commerceOrders.auctionBidId, candidateWinner.id)).limit(1))[0];
@@ -104,6 +110,7 @@ export async function settleExpiredAuctions() {
           const debited = chargeable ? await tx.update(users).set({ walletCents: sql`${users.walletCents} - ${chargeableAmount}` }).where(and(eq(users.id, candidateWinner.userId), gte(users.walletCents, chargeableAmount + heldElsewhere))) : null;
           if (!chargeable || debited?.[0]?.affectedRows === 0) {
             automaticCheckoutFailed = true;
+            if (auctionSize) await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} + 1` }).where(eq(listingSizeVariants.id, auctionSize.id));
             await tx.update(listingsOwned).set({ lifecycle: "auction-ended", stock: listing.stock, settledAt: listing.settledAt ?? now }).where(eq(listingsOwned.id, listing.id));
             await tx.update(proxyBids).set({ status: "outbid", currentBidCents: 0, reservedCents: 0 }).where(and(eq(proxyBids.listingId, listing.listingId), eq(proxyBids.status, "active")));
             await tx.update(proxyBids).set({ reservedCents: 0 }).where(eq(proxyBids.listingId, listing.listingId));
@@ -118,6 +125,9 @@ export async function settleExpiredAuctions() {
             buyerId: candidateWinner.userId,
             sellerId: listing.ownerId,
             quantity: 1,
+            variantSize: auctionSize?.size ?? null,
+            variantColor: auctionSize?.color || null,
+            unitPriceCents: amountCents,
             amountCents,
             payment: "E-wallet",
             province: winnerRow!.shippingProvince!,
@@ -141,7 +151,10 @@ export async function settleExpiredAuctions() {
       }
       await tx.update(proxyBids).set({ shippingPhone: null, shippingProvince: null, shippingMunicipality: null, shippingAddressDetails: null, shippingLatitude: null, shippingLongitude: null }).where(eq(proxyBids.listingId, listing.listingId));
       return true;
-    });
+    }); } catch (error) {
+      console.error("[Auctions] Auction settlement rolled back", error);
+      continue;
+    }
     if (!settled) continue;
 
     if (candidateWinner && !automaticCheckoutFailed) {

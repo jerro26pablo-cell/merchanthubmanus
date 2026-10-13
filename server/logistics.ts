@@ -1,8 +1,8 @@
 import type { Express, Request, Response } from "express";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, gte, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingsOwned, riderLocations, users } from "../drizzle/schema";
+import { commerceOrders, listingSizeVariants, listingsOwned, riderLocations, users } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => {
@@ -15,18 +15,43 @@ export const registerLogisticsRoutes = (app: Express) => {
     const user = await auth(req, res); if (!user) return;
     const body = req.body ?? {}; const listingId = String(body.listingId ?? "");
     if (!listingId) return res.status(400).json({ ok: false, error: "Listing is required." });
+    const requestedQuantity = Number(body.quantity);
+    if (!Number.isSafeInteger(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ ok: false, error: "Choose at least one whole item." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
-    if (!listing || listing.lifecycle !== "official") return res.status(404).json({ ok: false, error: "This listing is no longer available." });
-    if (listing.ownerId === user.id) return res.status(403).json({ ok: false, error: "You cannot buy your own listing." });
-    const requestedQuantity = Math.round(Number(body.quantity));
-    if (!Number.isFinite(requestedQuantity) || requestedQuantity < 1) return res.status(400).json({ ok: false, error: "Choose at least one item." });
-    if (requestedQuantity > listing.stock) return res.status(409).json({ ok: false, error: `Only ${listing.stock} item(s) remain in stock.` });
     const orderId = `MH-${Date.now().toString().slice(-6)}`;
-    await db.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, amountCents: Math.max(0, Math.round(Number(body.amountCents) || 0)), payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
-    await db.update(listingsOwned).set({ stock: listing.stock - requestedQuantity }).where(eq(listingsOwned.listingId, listingId));
-    await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId} is being prepared for ${body.municipality || user.municipality || "your location"}.`, orderId);
-    return res.status(201).json({ ok: true, orderId, location: { province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null } });
+    let result;
+    try { result = await db.transaction(async (tx) => {
+      const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
+      if (!listing || listing.lifecycle !== "official") return { error: "This listing is no longer available.", status: 404 as const };
+      if (listing.listingType !== "Buy now") return { error: "Auction listings must be purchased through the bidding process.", status: 409 as const };
+      if (listing.ownerId === user.id) return { error: "You cannot buy your own listing.", status: 403 as const };
+      const variants = await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listingId));
+      const requestedSize = String(body.size ?? "").trim();
+      const requestedColor = String(body.color ?? "").trim();
+      if (variants.length && !requestedSize) return { error: "Choose a size before checking out.", status: 400 as const };
+      const matchingSize = variants.filter((item) => item.size.toLocaleLowerCase() === requestedSize.toLocaleLowerCase());
+      if (matchingSize.length > 1 && !requestedColor) return { error: "Choose a color for that size before checking out.", status: 400 as const };
+      const variant = requestedSize ? matchingSize.find((item) => (item.color ?? "").toLocaleLowerCase() === requestedColor.toLocaleLowerCase()) : undefined;
+      if (requestedSize && !variant) return { error: "That size/color option is no longer available. Refresh the listing and choose another.", status: 409 as const };
+      const unitPriceCents = variant?.priceCents ?? listing.priceCents;
+      const availableStock = variant?.stock ?? listing.stock;
+      if (requestedQuantity > availableStock) return { error: `Only ${availableStock} item(s) remain in ${variant?.size ? `size ${variant.size}` : "stock"}.`, status: 409 as const };
+      const moved = variant
+        ? await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} - ${requestedQuantity}` }).where(and(eq(listingSizeVariants.id, variant.id), gte(listingSizeVariants.stock, requestedQuantity)))
+        : null;
+      if (moved && moved[0]?.affectedRows === 0) throw new Error("SIZE_STOCK_CHANGED");
+      const listingMoved = await tx.update(listingsOwned).set({ stock: sql`${listingsOwned.stock} - ${requestedQuantity}` }).where(and(eq(listingsOwned.listingId, listingId), gte(listingsOwned.stock, requestedQuantity), eq(listingsOwned.lifecycle, "official")));
+      if (listingMoved[0]?.affectedRows === 0) throw new Error("LISTING_STOCK_CHANGED");
+      await tx.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, variantSize: variant?.size ?? null, variantColor: variant?.color || null, unitPriceCents, amountCents: unitPriceCents * requestedQuantity, payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
+      return { orderId, province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null, amountCents: unitPriceCents * requestedQuantity, size: variant?.size ?? null, color: variant?.color || null };
+    }); } catch (error) {
+      if (error instanceof Error && error.message === "SIZE_STOCK_CHANGED") return res.status(409).json({ ok: false, error: "That size's stock changed during checkout. Refresh and try again." });
+      if (error instanceof Error && error.message === "LISTING_STOCK_CHANGED") return res.status(409).json({ ok: false, error: "Listing stock changed during checkout. Refresh and try again." });
+      throw error;
+    }
+    if ("error" in result) return res.status(result.status ?? 409).json({ ok: false, error: result.error });
+    await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId}${result.size ? ` for size ${result.size}${result.color ? ` · ${result.color}` : ""}` : ""} is being prepared for ${result.municipality || user.municipality || "your location"}.`, orderId);
+    return res.status(201).json({ ok: true, orderId, amountCents: result.amountCents, location: { province: result.province, municipality: result.municipality, addressDetails: result.addressDetails } });
   });
   app.get("/api/orders/active", async (req, res) => {
     const user = await auth(req, res); if (!user) return;

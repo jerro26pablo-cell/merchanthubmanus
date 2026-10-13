@@ -1,4 +1,4 @@
-export type ListingType = "Auction" | "Buy now" | "Both";
+export type ListingType = "Auction" | "Buy now";
 export type OrderStatus =
   | "Paid"
   | "Processing"
@@ -19,7 +19,6 @@ export type Listing = {
   price: number;
   currentBid?: number;
   startingBid?: number;
-  buyNow?: number;
   auctionStartAt?: string;
   auctionEndAt?: string;
   reserveThreshold?: number;
@@ -41,6 +40,8 @@ export type Listing = {
   sellerRating: number;
   condition: "New" | "Like new" | "Good";
   stock: number;
+  /** Per-size prices and quantities; omitted for listings without size variants. */
+  sizeVariants?: { size: string; color?: string; price: number; stock: number }[];
   reserveMet?: boolean;
   featured?: boolean;
   accent: string;
@@ -124,7 +125,6 @@ export const listings: Listing[] = [
     category: "Fashion",
     type: "Buy now",
     price: 1850,
-    buyNow: 1850,
     image: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?auto=format&fit=crop&w=900&q=85",
     seller: "Mara Atelier",
     sellerRating: 5,
@@ -136,10 +136,9 @@ export const listings: Listing[] = [
     id: "running-shoes",
     title: "New Balance 990v5 Grey",
     category: "Footwear",
-    type: "Both",
+    type: "Auction",
     price: 6900,
     currentBid: 6900,
-    buyNow: 7600,
     startingBid: 5600,
     bidders: 7,
     timeLeft: "06h 05m",
@@ -157,7 +156,6 @@ export const listings: Listing[] = [
     category: "Home",
     type: "Buy now",
     price: 2400,
-    buyNow: 2400,
     image: "https://images.unsplash.com/photo-1610701596007-11502861dcfa?auto=format&fit=crop&w=900&q=85",
     seller: "Luna Clay",
     sellerRating: 4.9,

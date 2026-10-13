@@ -11,6 +11,25 @@ describe("saved search matching", () => {
     expect(matchesSavedSearch({ query: "camera", filter: "All items" }, listing, polomolok)).toBe(false);
   });
 
+  it("lets an unrestricted All items search match future listings everywhere", () => {
+    expect(matchesSavedSearch({ query: "", filter: "All items" }, listing, polomolok)).toBe(true);
+    expect(matchesSavedSearch({ query: "", filter: "All items" }, { title: "Desk lamp", description: "LED reading light", category: "Home", listingType: "Auction" }, { province: "Cebu", municipality: "Cebu City" })).toBe(true);
+  });
+
+  it("matches an All locations size search against available sizes", () => {
+    const hoodieSizes = { ...listing, variants: [{ size: "M", color: "Black" }, { size: "2XL", color: "White" }] };
+    expect(matchesSavedSearch({ query: "", filter: "All items", size: "2XL" }, hoodieSizes, { province: "Cebu", municipality: "Cebu City" })).toBe(true);
+    expect(matchesSavedSearch({ query: "", filter: "All items", size: "XL" }, hoodieSizes, { province: "Cebu", municipality: "Cebu City" })).toBe(false);
+    expect(matchesSavedSearch({ query: "", filter: "All items" }, hoodieSizes, polomolok)).toBe(true);
+  });
+
+  it("matches color with the selected size on the same available combination", () => {
+    const hoodieVariants = { ...listing, variants: [{ size: "M", color: "Black" }, { size: "L", color: "White" }] };
+    expect(matchesSavedSearch({ query: "", filter: "All items", size: "M", color: "Black" }, hoodieVariants, polomolok)).toBe(true);
+    expect(matchesSavedSearch({ query: "", filter: "All items", size: "M", color: "White" }, hoodieVariants, polomolok)).toBe(false);
+    expect(matchesSavedSearch({ query: "", filter: "All items", color: "White" }, hoodieVariants, polomolok)).toBe(true);
+  });
+
   it("honors saved listing type, category, and exact store location filters", () => {
     expect(matchesSavedSearch({ query: "hoodie", filter: "Fashion", province: "South Cotabato", municipality: "Polomolok" }, listing, polomolok)).toBe(true);
     expect(matchesSavedSearch({ query: "hoodie", filter: "Auction" }, listing, polomolok)).toBe(false);

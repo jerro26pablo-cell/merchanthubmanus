@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildProxyBidLadderEvents,
   calculateProxyWinningBidCents,
   createBidderLabels,
   getAuctionPhase,
+  getMinimumNextBidCents,
   rankCurrentProxyBids,
   resolveExpiredAuctionOutcome,
   selectAuctionSummaryBid,
@@ -115,6 +117,11 @@ describe("auction lifecycle rules", () => {
 });
 
 describe("automatic proxy bidding", () => {
+  it("requires the seller increment above the opening amount and above each live bid", () => {
+    expect(getMinimumNextBidCents(0, 10000, 1000, false)).toBe(11000);
+    expect(getMinimumNextBidCents(11000, 10000, 1000, true)).toBe(12000);
+  });
+
   it("retains outbid proxy caps when a later bidder joins the bidding war", () => {
     const ranked = rankCurrentProxyBids([
       bid(1, 101, "active", 10000, 7000, "2026-10-02T10:00:00Z"),
@@ -134,10 +141,45 @@ describe("automatic proxy bidding", () => {
     expect(ranked.map((row) => [row.userId, row.maxBidCents])).toEqual([[202, 15000], [101, 9000]]);
   });
 
-  it("automatically raises by the bidder's chosen increment, not the seller floor", () => {
+  it("respects the seller's minimum increment even when a bidder chooses a smaller proxy step", () => {
     const leader = bid(1, 101, "active", 100000, 70000, "2026-10-02T10:00:00Z", 1000);
     const runner = bid(2, 202, "outbid", 50000, 0, "2026-10-02T10:01:00Z");
-    expect(calculateProxyWinningBidCents(leader, runner, 20000, 5000, 10000)).toBe(51000);
+    expect(calculateProxyWinningBidCents(leader, runner, 20000, 5000, 10000)).toBe(60000);
+  });
+
+  it("records every alternating ten-peso proxy response from the new bid through the winner's next step", () => {
+    const buyer1 = bid(2, 101, "active", 50000, 12000, "2026-10-02T10:01:00Z", 1000);
+    const buyer2 = bid(1, 202, "outbid", 40000, 0, "2026-10-02T10:00:00Z", 1000);
+    const ranked = rankCurrentProxyBids([buyer1, buyer2]);
+    const winningBidCents = calculateProxyWinningBidCents(ranked[0], ranked[1], 12000, 10000, 1000);
+    expect(winningBidCents).toBe(41000);
+    const ladder = buildProxyBidLadderEvents(
+      { proxyBidId: buyer1.id, userId: buyer1.userId, maxBidCents: buyer1.maxBidCents, incrementCents: buyer1.incrementCents ?? 1000 },
+      { proxyBidId: buyer2.id, userId: buyer2.userId, maxBidCents: buyer2.maxBidCents, incrementCents: buyer2.incrementCents ?? 1000 },
+      ranked[0].userId,
+      12000,
+      winningBidCents,
+      1000,
+    );
+    const opening = buildProxyBidLadderEvents(
+      { proxyBidId: 1, userId: 202, maxBidCents: 40000, incrementCents: 1000 },
+      undefined,
+      202,
+      11000,
+      11000,
+      1000,
+    );
+    const fullAuctionLadder = [...opening, ...ladder];
+    expect(fullAuctionLadder).toHaveLength(31);
+    expect(fullAuctionLadder.slice(0, 5).map((event) => [event.userId, event.amountCents])).toEqual([
+      [202, 11000], [101, 12000], [202, 13000], [101, 14000], [202, 15000],
+    ]);
+    expect(ladder.slice(0, 5).map((event) => [event.userId, event.amountCents])).toEqual([
+      [101, 12000], [202, 13000], [101, 14000], [202, 15000], [101, 16000],
+    ]);
+    expect(ladder.slice(-3).map((event) => [event.userId, event.amountCents])).toEqual([
+      [202, 39000], [101, 40000], [101, 41000],
+    ]);
   });
 
   it("keeps first-to-cap priority when a bidder repeats the same cap", () => {

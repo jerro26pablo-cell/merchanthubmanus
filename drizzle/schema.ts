@@ -1,4 +1,4 @@
-import { int, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
+import { index, int, longtext, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -59,6 +59,14 @@ export const proxyBids = mysqlTable("proxy_bids", {
 
 export type ProxyBid = typeof proxyBids.$inferSelect;
 
+export const auctionBidEventBatches = mysqlTable("auction_bid_event_batches", {
+  id: int("id").autoincrement().primaryKey(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  submittedProxyBidId: int("submittedProxyBidId").notNull(),
+  eventsJson: longtext("eventsJson").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ listingSequence: index("auction_bid_event_batches_listing_seq_idx").on(table.listingId, table.id) }));
+
 export const listingsOwned = mysqlTable("listings_owned", {
   id: int("id").autoincrement().primaryKey(),
   listingId: varchar("listingId", { length: 128 }).notNull().unique(),
@@ -67,9 +75,8 @@ export const listingsOwned = mysqlTable("listings_owned", {
   description: text("description").notNull(),
   category: varchar("category", { length: 80 }).notNull(),
   subcategory: varchar("subcategory", { length: 100 }),
-  listingType: mysqlEnum("listingType", ["Auction", "Buy now", "Both"]).notNull(),
+  listingType: mysqlEnum("listingType", ["Auction", "Buy now"]).notNull(),
   priceCents: int("priceCents").notNull(),
-  buyNowPriceCents: int("buyNowPriceCents"),
   stock: int("stock").notNull().default(1),
   condition: mysqlEnum("condition", ["New", "Like new", "Good"]).notNull(),
   /** JSON array of product photo data URLs; first item remains the cover image. */
@@ -86,6 +93,17 @@ export const listingsOwned = mysqlTable("listings_owned", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const listingSizeVariants = mysqlTable("listing_size_variants", {
+  id: int("id").autoincrement().primaryKey(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  size: varchar("size", { length: 32 }).notNull(),
+  color: varchar("color", { length: 40 }).notNull().default(""),
+  priceCents: int("priceCents").notNull(),
+  stock: int("stock").notNull().default(0),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+}, (table) => ({ uniqueSizeColorPerListing: uniqueIndex("size_variants_listing_size_color_unique").on(table.listingId, table.size, table.color), listingSizeIndex: index("size_variants_listing_idx").on(table.listingId) }));
+
 export const commerceOrders = mysqlTable("commerce_orders", {
   id: int("id").autoincrement().primaryKey(),
   orderId: varchar("orderId", { length: 64 }).notNull().unique(),
@@ -94,6 +112,9 @@ export const commerceOrders = mysqlTable("commerce_orders", {
   sellerId: int("sellerId").notNull(),
   auctionBidId: int("auctionBidId").unique(),
   quantity: int("quantity").notNull().default(1),
+  variantSize: varchar("variantSize", { length: 32 }),
+  variantColor: varchar("variantColor", { length: 40 }),
+  unitPriceCents: int("unitPriceCents"),
   amountCents: int("amountCents").notNull(),
   payment: mysqlEnum("payment", ["Online", "COD", "E-wallet"]).notNull(),
   province: varchar("province", { length: 120 }).notNull(),
@@ -194,6 +215,8 @@ export const savedSearches = mysqlTable("savedSearches", {
   name: varchar("name", { length: 120 }).notNull(),
   query: varchar("query", { length: 255 }).notNull().default(""),
   filter: varchar("filter", { length: 80 }).notNull().default("All items"),
+  size: varchar("size", { length: 32 }),
+  color: varchar("color", { length: 40 }),
   province: varchar("province", { length: 120 }),
   municipality: varchar("municipality", { length: 120 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -205,8 +228,6 @@ export const listingPriceHistory = mysqlTable("listing_price_history", {
   sellerId: int("sellerId").notNull(),
   previousPriceCents: int("previousPriceCents").notNull(),
   newPriceCents: int("newPriceCents").notNull(),
-  previousBuyNowPriceCents: int("previousBuyNowPriceCents"),
-  newBuyNowPriceCents: int("newBuyNowPriceCents"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { philippineDateTimeToUtcIso, utcIsoToPhilippineDateTime } from "../client/src/data/auctionDateTime";
+import { minimumPhilippineDateTime, philippineDateTimeToUtcIso, utcIsoToPhilippineDateTime } from "../client/src/data/auctionDateTime";
 
 describe("auction deadline Philippine-time conversion", () => {
   it("stores Philippine datetime-local values as the matching UTC instant", () => {
@@ -8,6 +8,10 @@ describe("auction deadline Philippine-time conversion", () => {
 
   it("round-trips a UTC auction end back to Philippine wall time", () => {
     expect(utcIsoToPhilippineDateTime("2030-10-02T06:30:00.000Z")).toBe("2030-10-02T14:30");
+  });
+
+  it("sets the picker minimum to the next selectable minute in Philippine time", () => {
+    expect(minimumPhilippineDateTime(new Date("2030-10-02T06:30:45.000Z"))).toBe("2030-10-02T14:31");
   });
 
   it("rejects missing, malformed, and impossible local dates", () => {

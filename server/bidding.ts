@@ -355,9 +355,9 @@ export function registerBiddingRoutes(app: Express) {
     await createNotification(user.id, "system", "Auction cancellation confirmed", `Your winning bid for “${decision.listing.title}” was cancelled.${refundText}`, decision.listing.listingId);
     if (decision.offerSent && decision.runner) {
       await createNotification(decision.runner.userId, "system", "Second-chance offer", `The winning buyer cancelled “${decision.listing.title}”. You were the next-highest bidder, so the item is offered to you at ${pesos(decision.runner.maxBidCents)}. Accept or decline this offer from your notification.`, decision.listing.listingId);
-      await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. A second-chance offer is waiting for the next-highest bidder.`, decision.listing.listingId);
+      await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. A second-chance offer is waiting for the next-highest bidder.`, decision.orderId ?? decision.listing.listingId);
     } else {
-      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. No eligible second-highest bidder remains; it is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.listing.listingId);
+      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. No eligible second-highest bidder remains; it is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.orderId ?? decision.listing.listingId);
     }
     publishAuctionUpdate(decision.bid.listingId);
     return res.json({ ok: true, secondChanceUserId: decision.runner?.userId ?? null, offerSent: decision.offerSent, refundedCents: decision.refundedCents });
@@ -372,7 +372,7 @@ export function registerBiddingRoutes(app: Express) {
     const offeredBids = await db.select().from(proxyBids).where(and(eq(proxyBids.userId, user.id), eq(proxyBids.status, "offered"))).orderBy(desc(proxyBids.createdAt));
     const offers = await Promise.all(offeredBids.map(async (bid) => {
       const listing = (await db.select({ title: listingsOwned.title, category: listingsOwned.category }).from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0];
-      return { bidId: bid.id, listingId: bid.listingId, amountCents: bid.currentBidCents, title: listing?.title ?? bid.listingId, category: listing?.category ?? "Auction" };
+      return { bidId: bid.id, listingId: bid.listingId, amountCents: bid.currentBidCents, title: listing?.title ?? bid.listingId, category: listing?.category ?? "Auction", acceptanceDeadline: bid.acceptanceDeadline };
     }));
     return res.json({ ok: true, offers });
   });
@@ -423,12 +423,14 @@ export function registerBiddingRoutes(app: Express) {
       if (!runner) return { error: "No second-chance offer is available for this account.", status: 404 as const };
       const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, listingId)).limit(1))[0];
       if (!listing || !["auction-ended", "canceled"].includes(listing.lifecycle)) return { error: "This second-chance offer is no longer available.", status: 409 as const };
-      const changed = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, acceptanceDeadline: null }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
+      const transition = secondChanceTransition("decline");
+      const changed = await tx.update(proxyBids).set({ status: transition.bidStatus, currentBidCents: 0, reservedCents: 0, acceptanceDeadline: null, cancellationReason: "The second-chance offer was declined by the bidder." }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "offered"), eq(proxyBids.userId, user.id)));
       if (changed[0]?.affectedRows === 0) return { error: "This offer has already been answered.", status: 409 as const };
+      await tx.update(listingsOwned).set({ lifecycle: transition.listingLifecycle }).where(and(eq(listingsOwned.listingId, listingId), inArray(listingsOwned.lifecycle, ["auction-ended", "canceled"])));
       return { listing };
     });
     if ("error" in decision) return res.status(decision.status ?? 409).json({ ok: false, error: decision.error });
-    await createNotification(decision.listing.ownerId, "system", "Second-chance offer declined", `The next-highest bidder declined “${decision.listing.title}”. The auction is ended without a sale; you can re-auction it from Inventory.`, listingId);
+    await createNotification(decision.listing.ownerId, "system", "Second-chance offer declined", `The next-highest bidder declined “${decision.listing.title}”. The auction is in Inventory → Auction ended and can be re-auctioned.`, listingId);
     await createNotification(user.id, "system", "Second-chance offer declined", `You declined the offer for “${decision.listing.title}”.`, listingId);
     publishAuctionUpdate(listingId);
     return res.json({ ok: true, listingId, status: "declined" });

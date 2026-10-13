@@ -2,13 +2,22 @@ import type { Express, Request, Response } from "express";
 import { and, eq, gte, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingSizeVariants, listingsOwned, riderLocations, users } from "../drizzle/schema";
+import { commerceOrders, listingSizeVariants, listingsOwned, proxyBids, riderLocations, users } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 
 const auth = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
   if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; }
   return user;
+};
+const enrichOrder = async (db: NonNullable<Awaited<ReturnType<typeof getDb>>>, row: any) => {
+  const [buyer, seller, listing, linkedBid] = await Promise.all([
+    db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.buyerId)).limit(1),
+    db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, row.sellerId)).limit(1),
+    db.select({ title: listingsOwned.title }).from(listingsOwned).where(eq(listingsOwned.listingId, row.listingId)).limit(1),
+    row.auctionBidId ? db.select({ cancellationReason: proxyBids.cancellationReason }).from(proxyBids).where(eq(proxyBids.id, row.auctionBidId)).limit(1) : Promise.resolve([]),
+  ]);
+  return { ...row, listingTitle: listing[0]?.title ?? row.listingId, cancellationReason: linkedBid[0]?.cancellationReason ?? null, buyerName: buyer[0]?.name || buyer[0]?.email || "Buyer", sellerName: seller[0]?.storeName || seller[0]?.name || seller[0]?.email || "Seller" };
 };
 export const registerLogisticsRoutes = (app: Express) => {
   app.post("/api/orders/checkout", async (req, res) => {
@@ -57,7 +66,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const user = await auth(req, res); if (!user) return;
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = user.role === "rider" ? await db.select().from(commerceOrders).where(or(eq(commerceOrders.status, "Processing"), eq(commerceOrders.riderId, user.id))) : user.role === "admin" ? await db.select().from(commerceOrders) : await db.select().from(commerceOrders).where(or(eq(commerceOrders.buyerId, user.id), eq(commerceOrders.sellerId, user.id)));
-    const orders = await Promise.all(rows.map(async (row) => { const buyer = (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, row.sellerId)).limit(1))[0]; return { ...row, buyerName: buyer?.name || buyer?.email || "Buyer", sellerName: seller?.storeName || seller?.name || seller?.email || "Seller" }; }));
+    const orders = await Promise.all(rows.map((row) => enrichOrder(db, row)));
     return res.json({ ok: true, orders });
   });
   app.get("/api/orders/:orderId", async (req, res) => {
@@ -65,8 +74,7 @@ export const registerLogisticsRoutes = (app: Express) => {
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const order = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!order || (user.role !== "admin" && user.id !== order.buyerId && user.id !== order.sellerId && user.id !== order.riderId)) return res.status(404).json({ ok: false, error: "Order not found." });
-    const buyer = (await db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, order.buyerId)).limit(1))[0]; const seller = (await db.select({ name: users.name, email: users.email, storeName: users.storeName }).from(users).where(eq(users.id, order.sellerId)).limit(1))[0];
-    return res.json({ ok: true, order: { ...order, buyerName: buyer?.name || buyer?.email || "Buyer", sellerName: seller?.storeName || seller?.name || seller?.email || "Seller" } });
+    return res.json({ ok: true, order: await enrichOrder(db, order) });
   });
   app.post("/api/orders/:orderId/accept", async (req, res) => {
     const user = await auth(req, res); if (!user) return;

@@ -7,6 +7,7 @@ import {
   getMinimumNextBidCents,
   rankCurrentProxyBids,
   resolveExpiredAuctionOutcome,
+  acceptanceExpiryTransition,
   selectAuctionSummaryBid,
   selectSecondChanceBid,
   secondChanceTransition,
@@ -88,9 +89,22 @@ describe("auction lifecycle rules", () => {
     expect(selectAuctionSummaryBid([rows[1]])?.status).toBe("offered");
   });
 
-  it("turns an accepted offer into a sale and a declined offer into re-auctionable inventory", () => {
+  it("turns an accepted offer into a sale and a declined offer into auction-ended inventory", () => {
     expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
-    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "canceled" });
+    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
+  });
+
+  it("expires a second-chance offer back to auction-ended inventory with an auditable reason", () => {
+    expect(acceptanceExpiryTransition("won")).toEqual({
+      bidStatus: "cancelled",
+      listingLifecycle: "canceled",
+      cancellationReason: "The winning bidder did not accept within 24 hours.",
+    });
+    expect(acceptanceExpiryTransition("offered")).toEqual({
+      bidStatus: "cancelled",
+      listingLifecycle: "auction-ended",
+      cancellationReason: "The second-chance offer expired after 24 hours.",
+    });
   });
 
   it("runs the cancellation and second-chance path when the seller permits cancellation", () => {
@@ -102,7 +116,7 @@ describe("auction lifecycle rules", () => {
     expect(resolveWinnerCancellation(true, null, null, 0)).toEqual({ allowed: true, reason: null, refundCents: 0 });
     expect(selectSecondChanceBid(bids, 101)?.userId).toBe(202);
     expect(secondChanceTransition("accept")).toEqual({ bidStatus: "won", listingLifecycle: "sold" });
-    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "canceled" });
+    expect(secondChanceTransition("decline")).toEqual({ bidStatus: "cancelled", listingLifecycle: "auction-ended" });
   });
 
   it("blocks change-of-mind cancellation when the seller selected no-cancel", () => {

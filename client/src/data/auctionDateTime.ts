@@ -1,5 +1,12 @@
 const PHILIPPINE_OFFSET = "+08:00";
 
+/** Return the next selectable minute for datetime-local inputs, formatted in Philippine time. */
+export function minimumPhilippineDateTime(now = new Date()): string {
+  if (!Number.isFinite(now.getTime())) return "";
+  const nextMinute = (Math.floor(now.getTime() / 60_000) + 1) * 60_000;
+  return utcIsoToPhilippineDateTime(new Date(nextMinute));
+}
+
 /** Convert a datetime-local wall time, explicitly interpreted as Philippine time, to a UTC ISO instant. */
 export function philippineDateTimeToUtcIso(value: string): string | null {
   const trimmed = value.trim();

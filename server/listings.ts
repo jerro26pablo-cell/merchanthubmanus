@@ -35,10 +35,27 @@ export const registerListingRoutes = (app: Express) => {
     const inTransit = orderRows.filter((row) => transitStatuses.has(row.status)).length;
     const grossSalesCents = orderRows.filter((row) => row.status !== "Cancelled" && (user.role === "admin" || row.sellerId === user.id)).reduce((sum, row) => sum + row.amountCents, 0);
     const availableStock = listingRows.reduce((sum, row) => sum + row.stock, 0);
-    const recentSalesCents = orderRows.filter((row) => row.status !== "Cancelled" && row.sellerId === user.id).reduce((sum, row) => sum + row.amountCents, 0);
     const forecastDays = 30;
-    const averageDailySalesCents = recentSalesCents / Math.max(1, 30);
-    return res.json({ ok: true, metrics: { grossSalesCents, liveAuctions, ordersInTransit: inTransit, availableStock, skuCount: listingRows.length, averageDailySalesCents, forecastDays, projectedDemandCents: averageDailySalesCents * forecastDays, stockCoverageDays: averageDailySalesCents > 0 ? Math.round((availableStock * 100) / averageDailySalesCents) : null } });
+    const dayMs = 24 * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const windowStartMs = nowMs - forecastDays * dayMs;
+    const recentOrders = orderRows.filter((row) => {
+      const createdAtMs = row.createdAt instanceof Date ? row.createdAt.getTime() : new Date(row.createdAt).getTime();
+      return row.status !== "Cancelled" && (user.role === "admin" || row.sellerId === user.id) && Number.isFinite(createdAtMs) && createdAtMs >= windowStartMs && createdAtMs <= nowMs;
+    });
+    const dailySalesCents = Array.from({ length: forecastDays }, () => 0);
+    let recentUnitsSold = 0;
+    for (const order of recentOrders) {
+      const createdAtMs = order.createdAt instanceof Date ? order.createdAt.getTime() : new Date(order.createdAt).getTime();
+      const dayIndex = Math.min(forecastDays - 1, Math.max(0, Math.floor((createdAtMs - windowStartMs) / dayMs)));
+      dailySalesCents[dayIndex] += order.amountCents;
+      recentUnitsSold += Number(order.quantity) || 0;
+    }
+    const recentSalesCents = dailySalesCents.reduce((sum, amount) => sum + amount, 0);
+    const averageDailySalesCents = recentSalesCents / forecastDays;
+    const averageDailyUnitsSold = recentUnitsSold / forecastDays;
+    const projectedDemandCents = averageDailySalesCents * forecastDays;
+    return res.json({ ok: true, metrics: { grossSalesCents, liveAuctions, ordersInTransit: inTransit, availableStock, skuCount: listingRows.length, dailySalesCents, recentSalesCents, recentUnitsSold, averageDailySalesCents, averageDailyUnitsSold, forecastDays, projectedDemandCents, stockCoverageDays: averageDailyUnitsSold > 0 ? Math.round(availableStock / averageDailyUnitsSold) : null } });
   });
   app.get("/api/listings", async (req, res) => {
     const user = await getAppUser(req);

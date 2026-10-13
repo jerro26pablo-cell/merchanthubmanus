@@ -151,7 +151,18 @@ export function selectSecondChanceBid(
 export function secondChanceTransition(action: "accept" | "decline") {
   return action === "accept"
     ? { bidStatus: "won" as const, listingLifecycle: "sold" as const }
-    : { bidStatus: "cancelled" as const, listingLifecycle: "canceled" as const };
+    : { bidStatus: "cancelled" as const, listingLifecycle: "auction-ended" as const };
+}
+
+/** Expiring a second-chance offer closes the auction without a sale, but keeps it re-auctionable. */
+export function acceptanceExpiryTransition(status: "won" | "offered") {
+  return {
+    bidStatus: "cancelled" as const,
+    listingLifecycle: status === "offered" ? "auction-ended" as const : "canceled" as const,
+    cancellationReason: status === "offered"
+      ? "The second-chance offer expired after 24 hours."
+      : "The winning bidder did not accept within 24 hours.",
+  };
 }
 
 export type WinnerCancellationDecision =

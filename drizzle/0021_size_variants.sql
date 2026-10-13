@@ -1,4 +1,4 @@
-CREATE TABLE `listing_size_variants` (
+CREATE TABLE IF NOT EXISTS `listing_size_variants` (
   `id` int NOT NULL AUTO_INCREMENT,
   `listingId` varchar(128) NOT NULL,
   `size` varchar(32) NOT NULL,
@@ -10,10 +10,12 @@ CREATE TABLE `listing_size_variants` (
   UNIQUE KEY `size_variants_listing_size_unique` (`listingId`, `size`),
   KEY `size_variants_listing_idx` (`listingId`)
 ) ENGINE=InnoDB;
+--> statement-breakpoint
 
 ALTER TABLE `commerce_orders`
   ADD COLUMN `variantSize` varchar(32) NULL AFTER `quantity`,
   ADD COLUMN `unitPriceCents` int NULL AFTER `variantSize`;
+--> statement-breakpoint
 
 ALTER TABLE `savedSearches`
   ADD COLUMN `size` varchar(32) NULL AFTER `filter`;

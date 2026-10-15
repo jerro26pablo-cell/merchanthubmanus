@@ -1,6 +1,6 @@
-export type RiderQueueFilter = "Available" | "Assigned" | "Picked up" | "In transit" | "Delivered" | "Cancelled";
+export type RiderQueueFilter = "Available" | "Assigned" | "Picked up" | "In transit" | "Delivered";
 
-export const riderQueueFilters: RiderQueueFilter[] = ["Available", "Assigned", "Picked up", "In transit", "Delivered", "Cancelled"];
+export const riderQueueFilters: RiderQueueFilter[] = ["Available", "Assigned", "Picked up", "In transit", "Delivered"];
 
 const statusForFilter: Record<RiderQueueFilter, string> = {
   Available: "Processing",
@@ -8,7 +8,6 @@ const statusForFilter: Record<RiderQueueFilter, string> = {
   "Picked up": "Picked up",
   "In transit": "In transit",
   Delivered: "Delivered",
-  Cancelled: "Cancelled",
 };
 
 export function filterRiderOrders<T extends { status: string }>(orders: T[], filter: RiderQueueFilter): T[] {

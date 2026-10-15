@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isListingOwner, resolveCancellationTransition } from "./bidCancellationWorkflow";
+import { isListingOwner, resolveCancellationTransition, resolveDemoWalletRefundCents } from "./bidCancellationWorkflow";
 
 describe("seller-approved bid cancellation", () => {
   it("allows only the listing owner to decide the request", () => {
@@ -21,6 +21,20 @@ describe("seller-approved bid cancellation", () => {
     });
   });
 
+  it("keeps a won auction bid unchanged when the seller denies the request", () => {
+    expect(resolveCancellationTransition("pending", "won", "denied")).toEqual({
+      requestStatus: "denied",
+      bidStatus: "won",
+    });
+  });
+
+  it("cancels a won auction bid only after seller approval", () => {
+    expect(resolveCancellationTransition("pending", "won", "approved")).toEqual({
+      requestStatus: "approved",
+      bidStatus: "cancelled",
+    });
+  });
+
   it("does not approve a bid that is no longer active", () => {
     expect(resolveCancellationTransition("pending", "outbid", "approved")).toEqual({
       error: "BID_NO_LONGER_ACTIVE",
@@ -31,5 +45,20 @@ describe("seller-approved bid cancellation", () => {
     expect(resolveCancellationTransition("approved", "cancelled", "denied")).toEqual({
       error: "REQUEST_ALREADY_DECIDED",
     });
+  });
+
+  it("refunds only a matching paid PHP demo-wallet ledger entry", () => {
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "paid", 125000, "PHP")).toBe(125000);
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "processing", 125000, "PHP")).toBe(125000);
+  });
+
+  it("does not refund COD, Stripe, unpaid, mismatched, cancelled, or invalid ledger entries", () => {
+    expect(resolveDemoWalletRefundCents("COD", "cod", "pending", 125000, "PHP")).toBe(0);
+    expect(resolveDemoWalletRefundCents("E-wallet", "stripe", "paid", 125000, "PHP")).toBe(0);
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "pending", 125000, "PHP")).toBe(0);
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "cancelled", 125000, "PHP")).toBe(0);
+    expect(resolveDemoWalletRefundCents("COD", "demo_wallet", "paid", 125000, "PHP")).toBe(0);
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "paid", 125000, "USD")).toBe(0);
+    expect(resolveDemoWalletRefundCents("E-wallet", "demo_wallet", "paid", -1, "PHP")).toBe(0);
   });
 });

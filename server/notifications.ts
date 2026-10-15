@@ -7,6 +7,7 @@ import { acceptanceExpiryTransition, resolveExpiredAuctionOutcome, selectSecondC
 import { publishAuctionUpdate } from "./auctionEvents";
 import { calculateAutoAuctionCharge } from "./auctionWallet";
 import { demoPaymentStatus } from "./demoPaymentState";
+import { recordDemoStripeEvent } from "./demoStripeEvents";
 
 export async function createNotification(recipientId: number, type: "auction_won" | "delivery_update" | "order_created" | "system", title: string, message: string, entityId?: string) {
   const db = await getDb();
@@ -145,6 +146,7 @@ export async function settleExpiredAuctions() {
           });
           const buyer = (await tx.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, candidateWinner.userId)).limit(1))[0];
           await tx.insert(paymentOrders).values({ orderId: automaticOrderId, paymentMethod: "demo_wallet", stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(buyer?.email ?? "").slice(0, 320), customerName: String(buyer?.name || buyer?.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus("demo_wallet", "Processing") });
+          await recordDemoStripeEvent(tx, "payment_intent.succeeded");
         }
       }
 

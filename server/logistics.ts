@@ -5,6 +5,7 @@ import { getAppUser } from "./appAuth";
 import { commerceOrders, listingSizeVariants, listingsOwned, paymentOrders, proxyBids, riderLocations, users } from "../drizzle/schema";
 import { createNotification } from "./notifications";
 import { demoPaymentStatus } from "./demoPaymentState";
+import { recordDemoStripeEvent } from "./demoStripeEvents";
 
 const auth = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -65,6 +66,7 @@ export const registerLogisticsRoutes = (app: Express) => {
       if (listingMoved[0]?.affectedRows === 0) throw new Error("LISTING_STOCK_CHANGED");
       await tx.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, variantSize: variant?.size ?? null, variantColor: variant?.color || null, unitPriceCents, amountCents, payment: paymentMethod === "cod" ? "COD" : "E-wallet", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
       await tx.insert(paymentOrders).values({ orderId, paymentMethod, stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(user.email ?? "").slice(0, 320), customerName: String(user.name || user.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus(paymentMethod, "Processing") });
+      await recordDemoStripeEvent(tx, paymentMethod === "cod" ? "payment_intent.processing" : "payment_intent.succeeded");
       return { orderId, province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null, amountCents, size: variant?.size ?? null, color: variant?.color || null, paymentMethod };
     }); } catch (error) {
       if (error instanceof Error && error.message === "WALLET_CHANGED") return res.status(409).json({ ok: false, error: "Your demo-wallet balance changed during checkout. Refresh and try again." });

@@ -9,6 +9,7 @@ import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 import { calculateAuctionHoldChange, getSpendableWalletCents } from "./auctionWallet";
 import { demoPaymentStatus } from "./demoPaymentState";
 import { isListingOwner, resolveCancellationTransition, resolveDemoWalletRefundCents } from "./bidCancellationWorkflow";
+import { recordDemoStripeEvent } from "./demoStripeEvents";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -313,6 +314,7 @@ export function registerBiddingRoutes(app: Express) {
       await tx.insert(commerceOrders).values({ orderId, listingId: listing.listingId, auctionBidId: bid.id, buyerId: user.id, sellerId: listing.ownerId, quantity: 1, variantSize: auctionSize?.size ?? null, variantColor: auctionSize?.color || null, unitPriceCents: amountCents, amountCents, payment, province, municipality, addressDetails, contactNumber: phone, destinationLatitude: latitude == null ? null : String(latitude), destinationLongitude: longitude == null ? null : String(longitude), status: "Processing" });
       const paymentMethod = payment === "COD" ? "cod" as const : "demo_wallet" as const;
       await tx.insert(paymentOrders).values({ orderId, paymentMethod, stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(user.email ?? "").slice(0, 320), customerName: String(user.name || user.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus(paymentMethod, "Processing") });
+      await recordDemoStripeEvent(tx, paymentMethod === "cod" ? "payment_intent.processing" : "payment_intent.succeeded");
       await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id));
       return { orderId, amountCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: false };
     });

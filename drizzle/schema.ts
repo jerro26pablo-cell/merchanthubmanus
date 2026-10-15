@@ -148,14 +148,15 @@ export const riderLocations = mysqlTable("rider_locations", {
 export const paymentOrders = mysqlTable("payment_orders", {
   id: int("id").autoincrement().primaryKey(),
   orderId: varchar("orderId", { length: 64 }).notNull().unique(),
-  stripeCheckoutSessionId: varchar("stripeCheckoutSessionId", { length: 128 }).notNull().unique(),
+  paymentMethod: mysqlEnum("paymentMethod", ["demo_wallet", "cod", "stripe"]).notNull().default("stripe"),
+  stripeCheckoutSessionId: varchar("stripeCheckoutSessionId", { length: 128 }).unique(),
   stripePaymentIntentId: varchar("stripePaymentIntentId", { length: 128 }),
   currency: varchar("currency", { length: 3 }).notNull(),
   amountMinor: int("amountMinor").notNull(),
   customerEmail: varchar("customerEmail", { length: 320 }).notNull(),
   customerName: varchar("customerName", { length: 120 }).notNull(),
   itemTitle: varchar("itemTitle", { length: 160 }).notNull(),
-  status: mysqlEnum("status", ["processing", "paid", "failed", "cancelled"]).default("processing").notNull(),
+  status: mysqlEnum("status", ["pending", "processing", "paid", "failed", "cancelled"]).default("processing").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

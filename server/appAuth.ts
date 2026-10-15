@@ -4,6 +4,7 @@ import { parse } from "cookie";
 import { and, eq, ne } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db";
+import { riderApplicationUpdate } from "./riderApplicationState";
 import { notifications, users } from "../drizzle/schema";
 
 const SESSION_COOKIE = "merchant_hub_session";
@@ -14,7 +15,7 @@ const RIDER_EMAIL = "rider@gmail.com";
 const RIDER_PASSWORD = "rider123";
 const PASSWORD_SECRET = process.env.PASSWORD_SECRET ?? "merchant-hub-password-secret-v1";
 const LEGACY_PASSWORD_SECRETS = [process.env.MANUS_JWT_SECRET, process.env.SESSION_SECRET, "merchant-hub-demo-session-secret"].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
-type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; sellerEnabled: boolean; sellerApplicationStatus?: "none" | "pending" | "approved" | "denied" };
+type SessionUser = { id: number; name: string; email: string; role: "user" | "admin" | "rider"; province?: string | null; municipality?: string | null; walletCents: number; storeName?: string | null; storeImage?: string | null; storePhone?: string | null; storeEmail?: string | null; storeProvince?: string | null; storeMunicipality?: string | null; storeAddress?: string | null; sellerEnabled: boolean; sellerApplicationStatus?: "none" | "pending" | "approved" | "denied"; riderApplicationStatus?: "none" | "pending" | "approved" | "denied" };
 
 const hashPasswordWithSecret = (password: string, secret: string) => new Promise<string>((resolve, reject) => {
   crypto.scrypt(password, secret, 64, (error, derived) => {
@@ -51,7 +52,7 @@ const verifySession = (token: string | undefined) => {
 const isCanonicalAdmin = (user: { role: string; email?: string | null }) => user.role === "admin" && String(user.email ?? "").toLowerCase() === ADMIN_EMAIL;
 const LEGACY_APPROVED_SELLER_EMAIL = "test1@gmail.com";
 const isLegacyApprovedSeller = (email?: string | null) => String(email ?? "").toLowerCase() === LEGACY_APPROVED_SELLER_EMAIL;
-const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: isCanonicalAdmin(user) ? "admin" : user.role === "admin" ? "user" : user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, sellerEnabled: isCanonicalAdmin(user) || isLegacyApprovedSeller(user.email) || (Boolean(user.sellerEnabled) && user.sellerApplicationStatus === "approved"), sellerApplicationStatus: isLegacyApprovedSeller(user.email) ? "approved" : user.sellerApplicationStatus });
+const publicUser = (user: typeof users.$inferSelect): SessionUser => ({ id: user.id, name: user.name ?? user.email ?? "MerchantHub user", email: user.email ?? "", role: isCanonicalAdmin(user) ? "admin" : user.role === "admin" ? "user" : user.role, province: user.province, municipality: user.municipality, walletCents: user.walletCents, storeName: user.storeName, storeImage: user.storeImage, storePhone: user.storePhone, storeEmail: user.storeEmail, storeProvince: user.storeProvince, storeMunicipality: user.storeMunicipality, storeAddress: user.storeAddress, riderApplicationStatus: user.riderApplicationStatus, sellerEnabled: isCanonicalAdmin(user) || isLegacyApprovedSeller(user.email) || (Boolean(user.sellerEnabled) && user.sellerApplicationStatus === "approved"), sellerApplicationStatus: isLegacyApprovedSeller(user.email) ? "approved" : user.sellerApplicationStatus });
 
 export async function getAppUser(req: Request): Promise<SessionUser | undefined> {
   const db = await getDb();
@@ -80,7 +81,7 @@ export function registerAppAuthRoutes(app: Express) {
     const { name, email, password, province, municipality } = req.body as Record<string, unknown>;
     const normalizedEmail = String(email ?? "").trim().toLowerCase();
     if (!String(name ?? "").trim() || !normalizedEmail.includes("@") || String(password ?? "").length < 6 || !String(province ?? "").trim() || !String(municipality ?? "").trim()) return res.status(400).json({ ok: false, error: "Complete all fields. Password must be at least 6 characters." });
-    if (normalizedEmail === ADMIN_EMAIL) return res.status(403).json({ ok: false, error: "That email is reserved for the admin account." });
+    if ([ADMIN_EMAIL, RIDER_EMAIL].includes(normalizedEmail)) return res.status(403).json({ ok: false, error: "That email is reserved for a built-in MerchantHub account." });
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
@@ -91,6 +92,29 @@ export function registerAppAuthRoutes(app: Express) {
     const user = publicUser(row[0]);
     setSessionCookie(req, res, user);
     return res.json({ ok: true, user });
+  });
+
+
+  app.post("/api/auth/register-rider", async (req, res) => {
+    const { name, email, password, province, municipality } = req.body as Record<string, unknown>;
+    const normalizedEmail = String(email ?? "").trim().toLowerCase();
+    if (!String(name ?? "").trim() || !normalizedEmail.includes("@") || normalizedEmail.length > 320 || String(password ?? "").length < 6 || !String(province ?? "").trim() || !String(municipality ?? "").trim()) return res.status(400).json({ ok: false, error: "Complete all fields. Password must be at least 6 characters." });
+    if ([ADMIN_EMAIL, RIDER_EMAIL].includes(normalizedEmail)) return res.status(403).json({ ok: false, error: "That email is reserved for a built-in MerchantHub account." });
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    if (existing[0]) return res.status(409).json({ ok: false, error: "An account with that email already exists." });
+    const [created] = await db.insert(users).values({ openId: `local:${normalizedEmail}`, name: String(name).trim().slice(0, 160), email: normalizedEmail, passwordHash: await hashPassword(String(password)), province: String(province).trim(), municipality: String(municipality).trim(), walletCents: 0, loginMethod: "password", role: "user", riderApplicationStatus: "pending" }).$returningId();
+    const row = await db.select().from(users).where(eq(users.id, created.id)).limit(1);
+    if (!row[0]) return res.status(500).json({ ok: false, error: "Rider application could not be loaded after registration." });
+    const user = publicUser(row[0]);
+    setSessionCookie(req, res, user);
+    const admin = (await db.select({ id: users.id }).from(users).where(eq(users.email, ADMIN_EMAIL)).limit(1))[0];
+    if (admin) {
+      try { await db.insert(notifications).values({ recipientId: admin.id, type: "system", title: "Rider application submitted", message: `${user.name} submitted a rider application for admin review.` }); }
+      catch (error) { console.warn("[Rider application] Admin notification could not be created:", error); }
+    }
+    return res.json({ ok: true, user, applicationStatus: "pending" });
   });
 
   app.post("/api/auth/login", async (req, res) => {
@@ -136,10 +160,12 @@ export function registerAppAuthRoutes(app: Express) {
   app.post("/api/auth/logout", (req, res) => { clearSessionCookie(req, res); return res.json({ ok: true }); });
   app.patch("/api/auth/seller-profile", async (req, res) => {
     const user = await getAppUser(req); if (!user) return res.status(401).json({ ok: false, error: "Please log in." });
-    const storeName = String(req.body?.storeName ?? "").trim(); const storeImage = req.body?.storeImage ? String(req.body.storeImage) : null;
-    if (!storeName) return res.status(400).json({ ok: false, error: "Store name is required." });
+    const storeName = String(req.body?.storeName ?? "").trim().slice(0, 160); const storeImage = req.body?.storeImage ? String(req.body.storeImage) : null;
+    const storePhone = String(req.body?.storePhone ?? "").trim().slice(0, 32); const storeEmail = String(req.body?.storeEmail ?? "").trim().toLowerCase().slice(0, 320);
+    const storeProvince = String(req.body?.storeProvince ?? "").trim().slice(0, 120); const storeMunicipality = String(req.body?.storeMunicipality ?? "").trim().slice(0, 120); const storeAddress = String(req.body?.storeAddress ?? "").trim().slice(0, 500);
+    if (!storeName || !/^[+0-9()\-\s]{7,32}$/.test(storePhone) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(storeEmail) || !storeProvince || !storeMunicipality || !storeAddress) return res.status(400).json({ ok: false, error: "Enter a store name, valid phone and email, street address, province, and municipality." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    await db.update(users).set({ storeName, storeImage, sellerEnabled: user.sellerEnabled ? 1 : 0, sellerApplicationStatus: user.sellerEnabled ? "approved" : "pending" }).where(eq(users.id, user.id));
+    await db.update(users).set({ storeName, storeImage, storePhone, storeEmail, storeProvince, storeMunicipality, storeAddress, sellerEnabled: user.sellerEnabled ? 1 : 0, sellerApplicationStatus: user.sellerEnabled ? "approved" : "pending" }).where(eq(users.id, user.id));
     const row = (await db.select().from(users).where(eq(users.id, user.id)).limit(1))[0];
     return res.json({ ok: true, user: row ? publicUser(row) : user, applicationSubmitted: !user.sellerEnabled });
   });
@@ -160,7 +186,7 @@ export function registerAppAuthRoutes(app: Express) {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = await db.select().from(users).where(and(eq(users.sellerApplicationStatus, "pending"), ne(users.email, LEGACY_APPROVED_SELLER_EMAIL)));
-    return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, storeName: row.storeName, storeImage: row.storeImage, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
+    return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, storeName: row.storeName, storeImage: row.storeImage, storePhone: row.storePhone, storeEmail: row.storeEmail, storeProvince: row.storeProvince, storeMunicipality: row.storeMunicipality, storeAddress: row.storeAddress, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/seller-applications/:userId", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
@@ -172,17 +198,39 @@ export function registerAppAuthRoutes(app: Express) {
     await db.insert(notifications).values({ recipientId: targetId, type: "system", title: status === "approved" ? "Seller application approved" : "Seller application denied", message: status === "approved" ? "Your seller application was approved. Seller tools and listing creation are now available." : "Your seller application was denied. You can submit a new application after reviewing your seller details." });
     return res.json({ ok: true, status });
   });
+
+  app.get("/api/admin/rider-applications", async (req, res) => {
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const rows = await db.select().from(users).where(eq(users.riderApplicationStatus, "pending"));
+    return res.json({ ok: true, applications: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, province: row.province, municipality: row.municipality, createdAt: row.createdAt })) });
+  });
+  app.patch("/api/admin/rider-applications/:userId", async (req, res) => {
+    const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
+    const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null;
+    if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." });
+    const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const targetId = Number(req.params.userId);
+    const decision = riderApplicationUpdate(status);
+    const result = await db.update(users).set(decision).where(and(eq(users.id, targetId), eq(users.riderApplicationStatus, "pending")));
+    if (result[0]?.affectedRows === 0) return res.status(404).json({ ok: false, error: "Pending rider application not found." });
+    try {
+      await db.insert(notifications).values({ recipientId: targetId, type: "system", title: status === "approved" ? "Rider application approved" : "Rider application not approved", message: status === "approved" ? "Your rider application was approved. Sign in again or keep this page open to open your Rider Dashboard." : "Your rider application was not approved. You can continue using MerchantHub as a buyer." });
+    } catch (error) { console.warn("[Rider application] Applicant notification could not be created:", error); }
+    return res.json({ ok: true, status, role: decision.role });
+  });
+
   app.get("/api/admin/overview", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    const rows = await db.select({ email: users.email, sellerApplicationStatus: users.sellerApplicationStatus, deactivatedAt: users.deactivatedAt, role: users.role }).from(users);
-    return res.json({ ok: true, metrics: { totalUsers: rows.length, activeUsers: rows.filter((row) => !row.deactivatedAt).length, deactivatedUsers: rows.filter((row) => Boolean(row.deactivatedAt)).length, pendingSellerApplications: rows.filter((row) => row.sellerApplicationStatus === "pending" && !isLegacyApprovedSeller(row.email)).length, approvedSellers: rows.filter((row) => row.sellerApplicationStatus === "approved" || isLegacyApprovedSeller(row.email)).length } });
+    const rows = await db.select({ email: users.email, sellerApplicationStatus: users.sellerApplicationStatus, riderApplicationStatus: users.riderApplicationStatus, deactivatedAt: users.deactivatedAt, role: users.role }).from(users);
+    return res.json({ ok: true, metrics: { totalUsers: rows.length, activeUsers: rows.filter((row) => !row.deactivatedAt).length, deactivatedUsers: rows.filter((row) => Boolean(row.deactivatedAt)).length, pendingSellerApplications: rows.filter((row) => row.sellerApplicationStatus === "pending" && !isLegacyApprovedSeller(row.email)).length, pendingRiderApplications: rows.filter((row) => row.riderApplicationStatus === "pending").length, approvedSellers: rows.filter((row) => row.sellerApplicationStatus === "approved" || isLegacyApprovedSeller(row.email)).length } });
   });
   app.get("/api/admin/users", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
     const rows = await db.select().from(users);
-    return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, sellerEnabled: Boolean(row.sellerEnabled) || isLegacyApprovedSeller(row.email), sellerApplicationStatus: isLegacyApprovedSeller(row.email) ? "approved" : row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
+    return res.json({ ok: true, users: rows.map((row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, storeName: row.storeName, storePhone: row.storePhone, storeEmail: row.storeEmail, storeProvince: row.storeProvince, storeMunicipality: row.storeMunicipality, storeAddress: row.storeAddress, riderApplicationStatus: row.riderApplicationStatus, sellerEnabled: Boolean(row.sellerEnabled) || isLegacyApprovedSeller(row.email), sellerApplicationStatus: isLegacyApprovedSeller(row.email) ? "approved" : row.sellerApplicationStatus, deactivatedAt: row.deactivatedAt, createdAt: row.createdAt })) });
   });
   app.patch("/api/admin/users/:userId/deactivate", async (req, res) => {
     const user = await getAppUser(req); if ((!user || user.role !== "admin" || user.email.toLowerCase() !== ADMIN_EMAIL)) return res.status(403).json({ ok: false, error: "Admin access is required." });

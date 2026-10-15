@@ -729,3 +729,75 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
 .inventory-variant-report ul { display: grid; gap: 2px; margin: 2px 0 0 18px; padding: 0; }
 .inventory-variant-report li { padding-left: 2px; }
 .inventory-settled-at { margin: 0; }
+
+
+/* Rider signup, approval, and admin application review */
+.auth-switch.rider-signup-link {
+  margin-top: 4px;
+  color: var(--teal);
+  font-weight: 700;
+}
+.rider-pending-card .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.rider-pending-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 18px 0;
+  padding: 12px 14px;
+  border: 1px solid #f0dcaa;
+  border-radius: 12px;
+  background: #fff9e9;
+  color: #805f13;
+  font-size: 13px;
+  font-weight: 700;
+}
+.admin-application-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0;
+  border-top: 1px solid #e8eceb;
+}
+.admin-application-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.admin-application-info > strong {
+  color: #1d292b;
+  font-size: 14px;
+}
+.admin-application-info > span,
+.admin-user-store-details {
+  color: #657273;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.admin-store-preview {
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.application-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 680px) {
+  .admin-application-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+  .admin-application-row .application-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}

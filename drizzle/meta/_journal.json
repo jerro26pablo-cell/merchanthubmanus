@@ -162,6 +162,13 @@
       "when": 1791810000000,
       "tag": "0022_color_variants",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1792047320399,
+      "tag": "0023_rider_signup_store_contacts",
+      "breakpoints": true
     }
   ]
 }

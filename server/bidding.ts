@@ -8,7 +8,7 @@ import { buildProxyBidLadderEvents, calculateProxyWinningBidCents, createBidderL
 import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 import { calculateAuctionHoldChange, getSpendableWalletCents } from "./auctionWallet";
 import { demoPaymentStatus } from "./demoPaymentState";
-import { isListingOwner, resolveCancellationTransition } from "./bidCancellationWorkflow";
+import { isListingOwner, resolveCancellationTransition, resolveDemoWalletRefundCents } from "./bidCancellationWorkflow";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -16,6 +16,13 @@ const requireUser = async (req: Request, res: Response) => {
   return user;
 };
 const pesos = (cents: number) => `₱${(cents / 100).toLocaleString("en-PH")}`;
+const notifyAuctionSafely = async (...args: Parameters<typeof createNotification>) => {
+  try {
+    await createNotification(...args);
+  } catch (error) {
+    console.error("[Auctions] A committed cancellation notification could not be saved", error);
+  }
+};
 const activeForListing = async (db: NonNullable<Awaited<ReturnType<typeof getDb>>>, listingId: string) => db.select().from(proxyBids).where(and(eq(proxyBids.listingId, listingId), eq(proxyBids.status, "active")));
 
 async function getWalletSummary(db: NonNullable<Awaited<ReturnType<typeof getDb>>>, userId: number) {
@@ -38,7 +45,10 @@ export async function getBidHistoryForUser(userId: number) {
   const rows = await db.select().from(proxyBids).where(eq(proxyBids.userId, userId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id)).limit(100);
   const cancellationRows = await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.userId, userId));
   cancellationRows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || b.id - a.id);
-  const cancellationByBidId = new Map(cancellationRows.map((request) => [request.bidId, request]));
+  const cancellationByBidId = new Map<number, typeof cancellationRows[number]>();
+  for (const request of cancellationRows) {
+    if (!cancellationByBidId.has(request.bidId)) cancellationByBidId.set(request.bidId, request);
+  }
   const listingRows = await db.select().from(listingsOwned);
   const listingMap = new Map(listingRows.map((listing) => [listing.listingId, listing]));
   const orders = await db.select({ auctionBidId: commerceOrders.auctionBidId, orderId: commerceOrders.orderId, status: commerceOrders.status }).from(commerceOrders).where(eq(commerceOrders.buyerId, userId));
@@ -315,63 +325,75 @@ export function registerBiddingRoutes(app: Express) {
   });
   app.post("/api/bids/:bidId/cancel", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
-    const cancellationReason = String(req.body?.reason ?? "").trim().slice(0, 500);
-    if (!cancellationReason) return res.status(400).json({ ok: false, error: "Please provide a reason for canceling the winning item." });
+    const reason = String(req.body?.reason ?? "").trim().slice(0, 500);
+    if (!reason) return res.status(400).json({ ok: false, error: "Please provide a reason for asking to cancel the winning item." });
     await settleExpiredAuctions();
     const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
-    let decision: any;
+    let result: any;
     try {
-      decision = await db.transaction(async (tx) => {
-        const bid = (await tx.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1))[0];
-        if (!bid || bid.status !== "won") return { error: "Only your won auction can be cancelled here.", status: 404 as const };
+      result = await db.transaction(async (tx) => {
+        const bid = (await tx.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1).for("update"))[0];
+        if (!bid || bid.status !== "won") return { error: "Only your won auction can be submitted for cancellation.", status: 404 as const };
         const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0];
         if (!listing) return { error: "Auction listing not found.", status: 404 as const };
+        const existing = (await tx.select().from(bidCancellationRequests).where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending"))).limit(1))[0];
+        if (existing) return { request: existing, listing, existing: true };
         const order = (await tx.select().from(commerceOrders).where(eq(commerceOrders.auctionBidId, bid.id)).limit(1))[0];
-        const cancellation = resolveWinnerCancellation(listing.winnerCancellationAllowed !== 0, order?.status ?? null, order?.payment ?? null, order?.amountCents ?? 0);
-        if (!cancellation.allowed) return { error: cancellation.reason === "seller-policy" ? "This seller does not allow change-of-mind cancellation after winning." : "Cancellation is only available before the order enters delivery. Contact support if there is a fulfillment issue.", status: 409 as const };
-
-        // Claim the sold listing first. Every later mutation is in the same transaction;
-        // if the bid/order claim loses a race, throwing rolls back the stock change too.
-        const restored = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
-        if (restored[0]?.affectedRows === 0) return { error: "The listing is no longer eligible for cancellation.", status: 409 as const };
-        const auctionSizeRows = await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listing.listingId));
-        if (auctionSizeRows.length) await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} + 1` }).where(eq(listingSizeVariants.id, auctionSizeRows[0].id));
-        const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
-        if (cancelled[0]?.affectedRows === 0) throw new Error("WINNING_BID_ALREADY_RESOLVED");
-        if (order) {
-          const orderCancelled = await tx.update(commerceOrders).set({ status: "Cancelled" }).where(and(eq(commerceOrders.id, order.id), eq(commerceOrders.status, "Processing")));
-          if (orderCancelled[0]?.affectedRows === 0) throw new Error("ORDER_ALREADY_ADVANCED");
-          await tx.update(paymentOrders).set({ status: "cancelled" }).where(eq(paymentOrders.orderId, order.orderId));
-          if (cancellation.refundCents > 0) await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${cancellation.refundCents}` }).where(eq(users.id, user.id));
-        }
-
-        const rows = await tx.select().from(proxyBids).where(eq(proxyBids.listingId, bid.listingId)).orderBy(desc(proxyBids.createdAt));
-        const runner = selectSecondChanceBid(rows, user.id);
-        let offerSent = false;
-        if (runner) {
-          const offered = await tx.update(proxyBids).set({ status: "offered", currentBidCents: runner.maxBidCents, reservedCents: 0, acceptanceDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000) }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "outbid")));
-          offerSent = offered[0]?.affectedRows !== 0;
-        }
-        return { bid, listing, runner: offerSent ? runner : null, offerSent, refundedCents: cancellation.refundCents, orderId: order?.orderId ?? null };
+        const eligibility = resolveWinnerCancellation(Boolean(listing.winnerCancellationAllowed), order?.status ?? null, null, 0);
+        if (!eligibility.allowed) return { error: eligibility.reason === "seller-policy" ? "This seller does not allow change-of-mind cancellation after winning." : "Cancellation requests are only available before delivery starts. Contact the seller if there is a fulfillment issue.", status: 409 as const };
+        const inserted = await tx.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId();
+        const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, inserted[0].id)).limit(1))[0];
+        return { request, listing, existing: false };
       });
     } catch (error) {
-      if (error instanceof Error && ["WINNING_BID_ALREADY_RESOLVED", "ORDER_ALREADY_ADVANCED"].includes(error.message)) return res.status(409).json({ ok: false, error: "This auction win changed while cancellation was being processed. Refresh the record and try again." });
-      console.error("[Auctions] Winner cancellation transaction failed", error);
-      return res.status(500).json({ ok: false, error: "Cancellation could not be completed. No refund or inventory change was saved." });
+      console.error("[Auctions] Winner cancellation request failed", error);
+      return res.status(500).json({ ok: false, error: "Cancellation request could not be saved." });
     }
-    if ("error" in decision) return res.status(decision.status ?? 200).json({ ok: false, error: decision.error });
-    const refundText = decision.refundedCents ? ` Your demo e-wallet payment of ${pesos(decision.refundedCents)} was returned.` : " No payment was collected, so no refund was needed.";
-    await createNotification(user.id, "system", "Auction cancellation confirmed", `Your winning bid for “${decision.listing.title}” was cancelled.${refundText}`, decision.listing.listingId);
-    if (decision.offerSent && decision.runner) {
-      await createNotification(decision.runner.userId, "system", "Second-chance offer", `The winning buyer cancelled “${decision.listing.title}”. You were the next-highest bidder, so the item is offered to you at ${pesos(decision.runner.maxBidCents)}. Accept or decline this offer from your notification.`, decision.listing.listingId);
-      await createNotification(decision.listing.ownerId, "system", "Winner cancelled — second chance offered", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. A second-chance offer is waiting for the next-highest bidder.`, decision.orderId ?? decision.listing.listingId);
-    } else {
-      await createNotification(decision.listing.ownerId, "system", "Auction ended without a sale", `The winning buyer cancelled “${decision.listing.title}”. Reason: ${cancellationReason}. No eligible second-highest bidder remains; it is in Inventory → Canceled, where you can delete it, return it to draft, or re-auction it.`, decision.orderId ?? decision.listing.listingId);
-    }
-    publishAuctionUpdate(decision.bid.listingId);
-    return res.json({ ok: true, secondChanceUserId: decision.runner?.userId ?? null, offerSent: decision.offerSent, refundedCents: decision.refundedCents });
+    if ("error" in result) return res.status(result.status ?? 200).json({ ok: false, error: result.error });
+    if (!result.existing) await notifyAuctionSafely(result.listing.ownerId, "system", "Bid cancellation request", `The winning buyer asked to cancel “${result.listing.title}”: ${reason}. The bid and order remain unchanged until you approve or deny the request.`, result.listing.listingId);
+    return res.status(result.existing ? 200 : 201).json({ ok: true, request: result.request, existing: result.existing, status: "pending" });
   });
-  app.post("/api/bids/:bidId/cancellation-request", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const reason = String(req.body?.reason ?? "").trim().slice(0, 500); if (!reason) return res.status(400).json({ ok: false, error: "A cancellation reason is required." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const bid = (await db.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1))[0]; if (!bid || bid.status !== "active") return res.status(409).json({ ok: false, error: "Only an active bid can be submitted for cancellation." }); const existing = (await db.select().from(bidCancellationRequests).where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending"))).limit(1))[0]; if (existing) return res.json({ ok: true, request: existing, existing: true }); const result = await db.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId(); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, result[0].id)).limit(1))[0]; const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0]; if (listing) await createNotification(listing.ownerId, "system", "Bid cancellation request", `A buyer requested cancellation for “${listing.title}”: ${reason}`, bid.listingId); return res.status(201).json({ ok: true, request }); });
+  app.post("/api/bids/:bidId/cancellation-request", async (req, res) => {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    const reason = String(req.body?.reason ?? "").trim().slice(0, 500);
+    if (!reason) return res.status(400).json({ ok: false, error: "A cancellation reason is required." });
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+
+    let result: any;
+    try {
+      result = await db.transaction(async (tx) => {
+        const bid = (await tx.select().from(proxyBids)
+          .where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id)))
+          .limit(1).for("update"))[0];
+        if (!bid || bid.status !== "active") return { error: "Only an active bid can be submitted for cancellation." };
+
+        const existing = (await tx.select().from(bidCancellationRequests)
+          .where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending")))
+          .limit(1))[0];
+        if (existing) return { request: existing, existing: true };
+
+        const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0];
+        if (!listing) return { error: "Auction listing not found." };
+        const inserted = await tx.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId();
+        const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, inserted[0].id)).limit(1))[0];
+        return { request, listing, existing: false };
+      });
+    } catch (error) {
+      console.error("[Auctions] Active-bid cancellation request failed", error);
+      return res.status(500).json({ ok: false, error: "Cancellation request could not be saved." });
+    }
+    if ("error" in result) return res.status(result.error === "Auction listing not found." ? 404 : 409).json({ ok: false, error: result.error });
+    if (!result.existing) {
+      try {
+        await createNotification(result.listing.ownerId, "system", "Bid cancellation request", `A buyer requested cancellation for “${result.listing.title}”: ${reason}. The bid remains unchanged until you approve or deny the request.`, result.listing.listingId);
+      } catch (error) {
+        console.error("[Auctions] Cancellation notification could not be saved", error);
+      }
+    }
+    return res.status(result.existing ? 200 : 201).json({ ok: true, request: result.request, existing: result.existing });
+  });
   app.get("/api/bids/cancellation-requests", async (req, res) => {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -388,7 +410,23 @@ export function registerBiddingRoutes(app: Express) {
         db.select({ title: listingsOwned.title, ownerId: listingsOwned.ownerId }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1),
         db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, request.userId)).limit(1),
       ]);
-      return { ...request, listingTitle: listing[0]?.title ?? request.listingId, bidderName: bidder[0]?.name || bidder[0]?.email || `User ${request.userId}`, bidderEmail: bidder[0]?.email ?? "", bidAmountCents: bid[0]?.currentBidCents ?? bid[0]?.maxBidCents ?? null, bidStatus: bid[0]?.status ?? "missing", canDecide: listing[0]?.ownerId === user.id };
+      const order = await db.select({ orderId: commerceOrders.orderId, status: commerceOrders.status, payment: commerceOrders.payment }).from(commerceOrders).where(eq(commerceOrders.auctionBidId, request.bidId)).limit(1);
+      const ledger = order[0] ? await db.select({ paymentMethod: paymentOrders.paymentMethod, status: paymentOrders.status, amountMinor: paymentOrders.amountMinor, currency: paymentOrders.currency }).from(paymentOrders).where(eq(paymentOrders.orderId, order[0].orderId)).limit(1) : [];
+      return {
+        ...request,
+        listingTitle: listing[0]?.title ?? request.listingId,
+        bidderName: bidder[0]?.name || bidder[0]?.email || `User ${request.userId}`,
+        bidderEmail: bidder[0]?.email ?? "",
+        bidAmountCents: bid[0]?.currentBidCents ?? bid[0]?.maxBidCents ?? null,
+        bidStatus: bid[0]?.status ?? "missing",
+        orderStatus: order[0]?.status ?? null,
+        orderPayment: order[0]?.payment ?? null,
+        paymentMethod: ledger[0]?.paymentMethod ?? null,
+        paymentStatus: ledger[0]?.status ?? null,
+        paymentAmountMinor: ledger[0]?.amountMinor ?? null,
+        paymentCurrency: ledger[0]?.currency ?? null,
+        canDecide: listing[0]?.ownerId === user.id,
+      };
     }));
     return res.json({ ok: true, requests });
   });
@@ -400,35 +438,103 @@ export function registerBiddingRoutes(app: Express) {
     const requestId = Number(req.params.requestId);
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    await settleExpiredAuctions();
+    let result: any;
     try {
-      const result = await db.transaction(async (tx) => {
-        const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, requestId)).limit(1))[0];
+      result = await db.transaction(async (tx) => {
+        const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, requestId)).limit(1).for("update"))[0];
         if (!request) throw new Error("REQUEST_NOT_FOUND");
         if (request.status !== "pending") throw new Error("REQUEST_ALREADY_DECIDED");
-        const listing = (await tx.select({ title: listingsOwned.title, ownerId: listingsOwned.ownerId }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0];
+        const listing = (await tx.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0];
         if (!listing || !isListingOwner(listing.ownerId, user.id)) throw new Error("SELLER_NOT_AUTHORIZED");
-        const bid = (await tx.select({ status: proxyBids.status }).from(proxyBids).where(eq(proxyBids.id, request.bidId)).limit(1))[0];
+        const bid = (await tx.select().from(proxyBids).where(eq(proxyBids.id, request.bidId)).limit(1).for("update"))[0];
         const transition = resolveCancellationTransition(request.status, bid?.status ?? null, status);
         if ("error" in transition) throw new Error(transition.error);
-        if (status === "approved") {
+
+        let winnerOutcome: any = null;
+        if (status === "approved" && bid?.status === "active") {
           const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason: request.reason }).where(and(eq(proxyBids.id, request.bidId), eq(proxyBids.status, "active")));
           if (cancelled[0]?.affectedRows === 0) throw new Error("BID_NO_LONGER_ACTIVE");
+        } else if (status === "approved" && bid?.status === "won") {
+          const order = (await tx.select().from(commerceOrders).where(eq(commerceOrders.auctionBidId, bid.id)).limit(1))[0];
+          const cancellation = resolveWinnerCancellation(Boolean(listing.winnerCancellationAllowed), order?.status ?? null, null, 0);
+          if (!cancellation.allowed) throw new Error(cancellation.reason === "seller-policy" ? "WINNER_CANCELLATION_POLICY" : "WINNER_ORDER_ADVANCED");
+
+          const restored = await tx.update(listingsOwned).set({ lifecycle: "canceled", stock: listing.stock + 1 }).where(and(eq(listingsOwned.listingId, listing.listingId), eq(listingsOwned.lifecycle, "sold")));
+          if (restored[0]?.affectedRows === 0) throw new Error("LISTING_NO_LONGER_SOLD");
+          const auctionSizeRows = await tx.select().from(listingSizeVariants).where(eq(listingSizeVariants.listingId, listing.listingId));
+          if (auctionSizeRows.length) await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} + 1` }).where(eq(listingSizeVariants.id, auctionSizeRows[0].id));
+          const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason: request.reason }).where(and(eq(proxyBids.id, bid.id), eq(proxyBids.status, "won")));
+          if (cancelled[0]?.affectedRows === 0) throw new Error("BID_NO_LONGER_ACTIVE");
+          let refundedCents = 0;
+          let paymentNote = order ? "No eligible paid demo-wallet payment was confirmed in the order ledger, so no wallet refund was issued." : "There was no checkout order to refund.";
+          if (order) {
+            const orderCancelled = await tx.update(commerceOrders).set({ status: "Cancelled" }).where(and(eq(commerceOrders.id, order.id), eq(commerceOrders.status, "Processing")));
+            if (orderCancelled[0]?.affectedRows === 0) throw new Error("WINNER_ORDER_ADVANCED");
+            const paymentLedger = (await tx.select().from(paymentOrders).where(eq(paymentOrders.orderId, order.orderId)).limit(1))[0];
+            if (!paymentLedger) {
+              paymentNote = "No payment ledger record was found for this order, so no wallet refund was issued.";
+            } else if (order.payment === "E-wallet" && paymentLedger.paymentMethod === "demo_wallet" && paymentLedger.currency === "PHP" && paymentLedger.status !== "cancelled") {
+              const ledgerRefundCents = resolveDemoWalletRefundCents(order.payment, paymentLedger.paymentMethod, paymentLedger.status, paymentLedger.amountMinor, paymentLedger.currency);
+              const ledgerCancelled = await tx.update(paymentOrders).set({ status: "cancelled" }).where(and(eq(paymentOrders.orderId, order.orderId), eq(paymentOrders.paymentMethod, "demo_wallet"), eq(paymentOrders.currency, "PHP"), eq(paymentOrders.status, paymentLedger.status)));
+              if (ledgerCancelled[0]?.affectedRows) {
+                refundedCents = ledgerRefundCents;
+                if (refundedCents > 0) await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${refundedCents}` }).where(eq(users.id, request.userId));
+                paymentNote = refundedCents > 0 ? `The demo-wallet payment of ${pesos(refundedCents)} was returned.` : "The demo-wallet ledger contained no positive eligible amount, so no refund was issued.";
+              } else {
+                paymentNote = "The payment status changed during seller approval; no additional refund was issued.";
+              }
+            } else if (order.payment === "COD" && paymentLedger.paymentMethod === "cod" && paymentLedger.status === "pending") {
+              const codCancelled = await tx.update(paymentOrders).set({ status: "cancelled" }).where(and(eq(paymentOrders.orderId, order.orderId), eq(paymentOrders.paymentMethod, "cod"), eq(paymentOrders.status, "pending")));
+              paymentNote = codCancelled[0]?.affectedRows ? "The cash-on-delivery payment was still pending, so no refund was needed." : "The COD payment status changed during seller approval; no refund was issued.";
+            }
+          }
+          const bids = await tx.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
+          const runner = selectSecondChanceBid(bids, request.userId);
+          let offerSent = false;
+          if (runner) {
+            const offered = await tx.update(proxyBids).set({ status: "offered", currentBidCents: runner.maxBidCents, reservedCents: 0, acceptanceDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000) }).where(and(eq(proxyBids.id, runner.id), eq(proxyBids.status, "outbid")));
+            offerSent = offered[0]?.affectedRows !== 0;
+          }
+          winnerOutcome = { listingId: listing.listingId, listingTitle: listing.title, sellerId: listing.ownerId, buyerId: request.userId, reason: request.reason, runner: offerSent ? runner : null, offerSent, refundedCents, paymentNote, orderId: order?.orderId ?? null };
         }
+
         const updated = await tx.update(bidCancellationRequests).set({ status }).where(and(eq(bidCancellationRequests.id, request.id), eq(bidCancellationRequests.status, "pending")));
         if (updated[0]?.affectedRows === 0) throw new Error("REQUEST_ALREADY_DECIDED");
-        return { request, listingTitle: listing?.title ?? request.listingId };
+        return { request, listingTitle: listing.title, winnerOutcome, bidStatus: bid?.status ?? "missing" };
       });
-      await createNotification(result.request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${result.listingTitle}” was ${status}.`, result.request.listingId);
-      if (status === "approved") publishAuctionUpdate(result.request.listingId);
-      return res.json({ ok: true, status });
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
       if (code === "REQUEST_NOT_FOUND") return res.status(404).json({ ok: false, error: "Cancellation request not found." });
       if (code === "REQUEST_ALREADY_DECIDED") return res.status(409).json({ ok: false, error: "This cancellation request was already decided." });
-      if (code === "BID_NO_LONGER_ACTIVE") return res.status(409).json({ ok: false, error: "This bid is no longer active, so it cannot be cancelled from this request." });
+      if (code === "BID_NO_LONGER_ACTIVE") return res.status(409).json({ ok: false, error: "This bid is no longer eligible for cancellation from this request." });
       if (code === "SELLER_NOT_AUTHORIZED") return res.status(403).json({ ok: false, error: "Only the seller who owns this listing can decide its bid cancellation requests." });
-      throw error;
+      if (code === "WINNER_CANCELLATION_POLICY") return res.status(409).json({ ok: false, error: "The seller's cancellation policy no longer allows this winner cancellation." });
+      if (code === "WINNER_ORDER_ADVANCED") return res.status(409).json({ ok: false, error: "The order has entered delivery or changed status, so it cannot be cancelled through this request." });
+      if (code === "LISTING_NO_LONGER_SOLD") return res.status(409).json({ ok: false, error: "The listing is no longer eligible for winner cancellation." });
+      console.error("[Auctions] Seller cancellation decision failed", error);
+      return res.status(500).json({ ok: false, error: "The seller decision could not be saved. No cancellation or refund was saved." });
     }
+
+    const outcome = result.winnerOutcome;
+    if (outcome) {
+      const refundText = ` ${outcome.paymentNote}`;
+      const offerText = outcome.offerSent ? " A second-chance offer is now waiting for the next-highest bidder." : " There was no eligible second-highest bidder; the seller can re-auction the item.";
+      await notifyAuctionSafely(outcome.buyerId, "system", "Bid cancellation approved", `The seller approved your request to cancel “${outcome.listingTitle}”.${refundText}${offerText}`, outcome.listingId);
+      if (outcome.offerSent && outcome.runner) {
+        await notifyAuctionSafely(outcome.runner.userId, "system", "Second-chance offer", `The winning buyer's cancellation was approved for “${outcome.listingTitle}”. You were the next-highest bidder, so the item is offered to you at ${pesos(outcome.runner.maxBidCents)}. Accept or decline this offer from your notification.`, outcome.listingId);
+        await notifyAuctionSafely(outcome.sellerId, "system", "Cancellation approved — second chance offered", `You approved the winning buyer's cancellation for “${outcome.listingTitle}”. A second-chance offer was sent to the next-highest bidder. Reason: ${outcome.reason}.`, outcome.orderId ?? outcome.listingId);
+      } else {
+        await notifyAuctionSafely(outcome.sellerId, "system", "Winner cancellation approved", `You approved the winning buyer's cancellation for “${outcome.listingTitle}”. No eligible second-highest bidder remains. Reason: ${outcome.reason}. The listing is available to re-auction.`, outcome.orderId ?? outcome.listingId);
+      }
+    } else {
+      const decisionMessage = status === "approved"
+        ? `The seller approved your request to cancel your bid on “${result.listingTitle}”. Your bid is now cancelled.`
+        : `The seller denied your request to cancel your bid on “${result.listingTitle}”. ${result.bidStatus === "won" ? "Your winning bid and order remain unchanged." : result.bidStatus === "active" ? "Your bid remains active." : "The bid’s status had already changed."}`;
+      await notifyAuctionSafely(result.request.userId, "system", `Bid cancellation ${status}`, decisionMessage, result.request.listingId);
+    }
+    if (status === "approved") publishAuctionUpdate(result.request.listingId);
+    return res.json({ ok: true, status, secondChanceUserId: outcome?.runner?.userId ?? null, offerSent: outcome?.offerSent ?? false, refundedCents: outcome?.refundedCents ?? 0, paymentNote: outcome?.paymentNote ?? null });
   });
   app.get("/api/bids/second-chance/offers", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;

@@ -121,6 +121,7 @@ const navGroups = [
       { id: "bidding" as Section, label: "Bidding history", icon: Activity },
       { id: "orders" as Section, label: "Orders & logistics", icon: Truck },
       { id: "wallet" as Section, label: "E-wallet", icon: WalletCards },
+      { id: "payments" as Section, label: "Payments & labels", icon: CreditCard },
     ],
   },
   {

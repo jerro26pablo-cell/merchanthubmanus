@@ -2,14 +2,16 @@ import type { Express, Request, Response } from "express";
 import { and, eq, gte, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingSizeVariants, listingsOwned, proxyBids, riderLocations, users } from "../drizzle/schema";
+import { commerceOrders, listingSizeVariants, listingsOwned, paymentOrders, proxyBids, riderLocations, users } from "../drizzle/schema";
 import { createNotification } from "./notifications";
+import { demoPaymentStatus } from "./demoPaymentState";
 
 const auth = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
   if (!user) { res.status(401).json({ ok: false, error: "Please log in." }); return undefined; }
   return user;
 };
+const pesos = (cents: number) => `₱${(cents / 100).toLocaleString("en-PH")}`;
 const enrichOrder = async (db: NonNullable<Awaited<ReturnType<typeof getDb>>>, row: any) => {
   const [buyer, seller, listing, linkedBid] = await Promise.all([
     db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, row.buyerId)).limit(1),
@@ -45,21 +47,33 @@ export const registerLogisticsRoutes = (app: Express) => {
       const unitPriceCents = variant?.priceCents ?? listing.priceCents;
       const availableStock = variant?.stock ?? listing.stock;
       if (requestedQuantity > availableStock) return { error: `Only ${availableStock} item(s) remain in ${variant?.size ? `size ${variant.size}` : "stock"}.`, status: 409 as const };
+      const paymentMethod: "demo_wallet" | "cod" = body.payment === "COD" ? "cod" : "demo_wallet";
+      const amountCents = unitPriceCents * requestedQuantity;
+      if (paymentMethod === "demo_wallet") {
+        const account = (await tx.select({ walletCents: users.walletCents }).from(users).where(eq(users.id, user.id)).limit(1))[0];
+        const holds = await tx.select({ reservedCents: proxyBids.reservedCents }).from(proxyBids).where(eq(proxyBids.userId, user.id));
+        const heldElsewhere = holds.reduce((sum, row) => sum + Math.max(0, Number(row.reservedCents) || 0), 0);
+        if (!account || account.walletCents < amountCents + heldElsewhere) return { error: `Your available demo-wallet balance is not enough. Add ${pesos(amountCents)} or choose Cash on Delivery.`, status: 400 as const };
+        const debited = await tx.update(users).set({ walletCents: sql`${users.walletCents} - ${amountCents}` }).where(and(eq(users.id, user.id), gte(users.walletCents, amountCents + heldElsewhere)));
+        if (debited[0]?.affectedRows === 0) throw new Error("WALLET_CHANGED");
+      }
       const moved = variant
         ? await tx.update(listingSizeVariants).set({ stock: sql`${listingSizeVariants.stock} - ${requestedQuantity}` }).where(and(eq(listingSizeVariants.id, variant.id), gte(listingSizeVariants.stock, requestedQuantity)))
         : null;
       if (moved && moved[0]?.affectedRows === 0) throw new Error("SIZE_STOCK_CHANGED");
       const listingMoved = await tx.update(listingsOwned).set({ stock: sql`${listingsOwned.stock} - ${requestedQuantity}` }).where(and(eq(listingsOwned.listingId, listingId), gte(listingsOwned.stock, requestedQuantity), eq(listingsOwned.lifecycle, "official")));
       if (listingMoved[0]?.affectedRows === 0) throw new Error("LISTING_STOCK_CHANGED");
-      await tx.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, variantSize: variant?.size ?? null, variantColor: variant?.color || null, unitPriceCents, amountCents: unitPriceCents * requestedQuantity, payment: body.payment === "COD" ? "COD" : "Online", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
-      return { orderId, province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null, amountCents: unitPriceCents * requestedQuantity, size: variant?.size ?? null, color: variant?.color || null };
+      await tx.insert(commerceOrders).values({ orderId, listingId, buyerId: user.id, sellerId: listing.ownerId, quantity: requestedQuantity, variantSize: variant?.size ?? null, variantColor: variant?.color || null, unitPriceCents, amountCents, payment: paymentMethod === "cod" ? "COD" : "E-wallet", province: String(body.province || user.province || "Unknown"), municipality: String(body.municipality || user.municipality || "Unknown"), addressDetails: body.addressDetails ? String(body.addressDetails).slice(0, 240) : null, destinationLatitude: body.destinationLatitude ? String(body.destinationLatitude) : null, destinationLongitude: body.destinationLongitude ? String(body.destinationLongitude) : null, status: "Processing" });
+      await tx.insert(paymentOrders).values({ orderId, paymentMethod, stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(user.email ?? "").slice(0, 320), customerName: String(user.name || user.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus(paymentMethod, "Processing") });
+      return { orderId, province: body.province || user.province, municipality: body.municipality || user.municipality, addressDetails: body.addressDetails || null, amountCents, size: variant?.size ?? null, color: variant?.color || null, paymentMethod };
     }); } catch (error) {
+      if (error instanceof Error && error.message === "WALLET_CHANGED") return res.status(409).json({ ok: false, error: "Your demo-wallet balance changed during checkout. Refresh and try again." });
       if (error instanceof Error && error.message === "SIZE_STOCK_CHANGED") return res.status(409).json({ ok: false, error: "That size's stock changed during checkout. Refresh and try again." });
       if (error instanceof Error && error.message === "LISTING_STOCK_CHANGED") return res.status(409).json({ ok: false, error: "Listing stock changed during checkout. Refresh and try again." });
       throw error;
     }
     if ("error" in result) return res.status(result.status ?? 409).json({ ok: false, error: result.error });
-    await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId}${result.size ? ` for size ${result.size}${result.color ? ` · ${result.color}` : ""}` : ""} is being prepared for ${result.municipality || user.municipality || "your location"}.`, orderId);
+    await createNotification(user.id, "order_created", "Order placed", `Your order ${orderId}${result.size ? ` for size ${result.size}${result.color ? ` · ${result.color}` : ""}` : ""} is being prepared for ${result.municipality || user.municipality || "your location"}. Payment: ${result.paymentMethod === "cod" ? "Cash on Delivery" : "demo wallet"}.`, orderId);
     return res.status(201).json({ ok: true, orderId, amountCents: result.amountCents, location: { province: result.province, municipality: result.municipality, addressDetails: result.addressDetails } });
   });
   app.get("/api/orders/active", async (req, res) => {
@@ -115,6 +129,10 @@ export const registerLogisticsRoutes = (app: Express) => {
     if (user.role === "rider" && !allowed[current.status]?.includes(nextStatus)) return res.status(409).json({ ok: false, error: `A rider cannot move an order from ${current.status} to ${nextStatus}.` });
     const changed = await db.update(commerceOrders).set({ status: nextStatus }).where(and(eq(commerceOrders.orderId, req.params.orderId), eq(commerceOrders.status, current.status), user.role === "rider" ? eq(commerceOrders.riderId, user.id) : eq(commerceOrders.orderId, req.params.orderId)));
     if (changed[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "The delivery changed before this update. Refresh the queue." });
+    if (nextStatus === "Delivered" || nextStatus === "Cancelled") {
+      const method = current.payment === "COD" ? "cod" : "demo_wallet";
+      await db.update(paymentOrders).set({ status: demoPaymentStatus(method, nextStatus) }).where(eq(paymentOrders.orderId, current.orderId));
+    }
     await createNotification(current.buyerId, "delivery_update", `Delivery ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
     if (current.sellerId) await createNotification(current.sellerId, "delivery_update", `Order ${nextStatus.toLowerCase()}`, `Order ${current.orderId} is now ${nextStatus}.`, current.orderId);
     return res.json({ ok: true, status: nextStatus });

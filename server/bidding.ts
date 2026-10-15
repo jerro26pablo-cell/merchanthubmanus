@@ -1,12 +1,13 @@
 import type { Express, Request, Response } from "express";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "./db";
-import { auctionBidEventBatches, bidCancellationRequests, commerceOrders, listingSizeVariants, listingsOwned, proxyBids, users } from "../drizzle/schema";
+import { auctionBidEventBatches, bidCancellationRequests, commerceOrders, listingSizeVariants, listingsOwned, paymentOrders, proxyBids, users } from "../drizzle/schema";
 import { getAppUser } from "./appAuth";
 import { createNotification, settleExpiredAuctions } from "./notifications";
 import { buildProxyBidLadderEvents, calculateProxyWinningBidCents, createBidderLabels, getMinimumNextBidCents, getAuctionPhase, rankCurrentProxyBids, selectAuctionSummaryBid, selectSecondChanceBid, secondChanceTransition, resolveWinnerCancellation } from "./auctionState";
 import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 import { calculateAuctionHoldChange, getSpendableWalletCents } from "./auctionWallet";
+import { demoPaymentStatus } from "./demoPaymentState";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -295,6 +296,8 @@ export function registerBiddingRoutes(app: Express) {
       }
       const orderId = `MH-AUC-${bid.id}-${Date.now()}`;
       await tx.insert(commerceOrders).values({ orderId, listingId: listing.listingId, auctionBidId: bid.id, buyerId: user.id, sellerId: listing.ownerId, quantity: 1, variantSize: auctionSize?.size ?? null, variantColor: auctionSize?.color || null, unitPriceCents: amountCents, amountCents, payment, province, municipality, addressDetails, contactNumber: phone, destinationLatitude: latitude == null ? null : String(latitude), destinationLongitude: longitude == null ? null : String(longitude), status: "Processing" });
+      const paymentMethod = payment === "COD" ? "cod" as const : "demo_wallet" as const;
+      await tx.insert(paymentOrders).values({ orderId, paymentMethod, stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(user.email ?? "").slice(0, 320), customerName: String(user.name || user.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus(paymentMethod, "Processing") });
       await tx.update(proxyBids).set({ acceptanceDeadline: null }).where(eq(proxyBids.id, bid.id));
       return { orderId, amountCents, sellerId: listing.ownerId, listingTitle: listing.title, existing: false };
     });
@@ -333,6 +336,7 @@ export function registerBiddingRoutes(app: Express) {
         if (order) {
           const orderCancelled = await tx.update(commerceOrders).set({ status: "Cancelled" }).where(and(eq(commerceOrders.id, order.id), eq(commerceOrders.status, "Processing")));
           if (orderCancelled[0]?.affectedRows === 0) throw new Error("ORDER_ALREADY_ADVANCED");
+          await tx.update(paymentOrders).set({ status: "cancelled" }).where(eq(paymentOrders.orderId, order.orderId));
           if (cancellation.refundCents > 0) await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${cancellation.refundCents}` }).where(eq(users.id, user.id));
         }
 
@@ -363,8 +367,57 @@ export function registerBiddingRoutes(app: Express) {
     return res.json({ ok: true, secondChanceUserId: decision.runner?.userId ?? null, offerSent: decision.offerSent, refundedCents: decision.refundedCents });
   });
   app.post("/api/bids/:bidId/cancellation-request", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const reason = String(req.body?.reason ?? "").trim().slice(0, 500); if (!reason) return res.status(400).json({ ok: false, error: "A cancellation reason is required." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const bid = (await db.select().from(proxyBids).where(and(eq(proxyBids.id, Number(req.params.bidId)), eq(proxyBids.userId, user.id))).limit(1))[0]; if (!bid || bid.status !== "active") return res.status(409).json({ ok: false, error: "Only an active bid can be submitted for cancellation." }); const existing = (await db.select().from(bidCancellationRequests).where(and(eq(bidCancellationRequests.bidId, bid.id), eq(bidCancellationRequests.status, "pending"))).limit(1))[0]; if (existing) return res.json({ ok: true, request: existing, existing: true }); const result = await db.insert(bidCancellationRequests).values({ bidId: bid.id, listingId: bid.listingId, userId: user.id, reason }).$returningId(); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, result[0].id)).limit(1))[0]; const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, bid.listingId)).limit(1))[0]; if (listing) await createNotification(listing.ownerId, "system", "Bid cancellation request", `A buyer requested cancellation for “${listing.title}”: ${reason}`, bid.listingId); return res.status(201).json({ ok: true, request }); });
-  app.get("/api/bids/cancellation-requests", async (req, res) => { const user = await requireUser(req, res); if (!user) return; if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can manage live bid cancellation requests." }); const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const all = await db.select().from(bidCancellationRequests); const owned = user.role === "admin" ? all : all.filter((request) => request.userId === user.id || request.listingId); const ownedListings = user.role === "admin" ? new Set(all.map((request) => request.listingId)) : new Set((await db.select({ listingId: listingsOwned.listingId }).from(listingsOwned).where(eq(listingsOwned.ownerId, user.id))).map((row) => row.listingId)); return res.json({ ok: true, requests: owned.filter((request) => user.role === "admin" || request.userId === user.id || ownedListings.has(request.listingId)) }); });
-  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => { const user = await requireUser(req, res); if (!user) return; const db = await getDb(); if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." }); const request = (await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, Number(req.params.requestId))).limit(1))[0]; if (!request) return res.status(404).json({ ok: false, error: "Cancellation request not found." }); const listing = (await db.select().from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0]; if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can decide live bid cancellation requests." }); const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null; if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." }); await db.update(bidCancellationRequests).set({ status }).where(eq(bidCancellationRequests.id, request.id)); if (status === "approved") await db.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0 }).where(eq(proxyBids.id, request.bidId)); await createNotification(request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${listing?.title ?? request.listingId}” was ${status}.`, request.listingId); if (status === "approved") publishAuctionUpdate(request.listingId); return res.json({ ok: true, status }); });
+  app.get("/api/bids/cancellation-requests", async (req, res) => {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can manage live bid cancellation requests." });
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const rows = await db.select().from(bidCancellationRequests).orderBy(desc(bidCancellationRequests.createdAt));
+    const requests = await Promise.all(rows.map(async (request) => {
+      const [bid, listing, bidder] = await Promise.all([
+        db.select().from(proxyBids).where(eq(proxyBids.id, request.bidId)).limit(1),
+        db.select({ title: listingsOwned.title }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1),
+        db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, request.userId)).limit(1),
+      ]);
+      return { ...request, listingTitle: listing[0]?.title ?? request.listingId, bidderName: bidder[0]?.name || bidder[0]?.email || `User ${request.userId}`, bidderEmail: bidder[0]?.email ?? "", bidAmountCents: bid[0]?.currentBidCents ?? bid[0]?.maxBidCents ?? null, bidStatus: bid[0]?.status ?? "missing" };
+    }));
+    return res.json({ ok: true, requests });
+  });
+  app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can decide live bid cancellation requests." });
+    const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null;
+    if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." });
+    const requestId = Number(req.params.requestId);
+    const db = await getDb();
+    if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    try {
+      const result = await db.transaction(async (tx) => {
+        const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, requestId)).limit(1))[0];
+        if (!request) throw new Error("REQUEST_NOT_FOUND");
+        if (request.status !== "pending") throw new Error("REQUEST_ALREADY_DECIDED");
+        const listing = (await tx.select({ title: listingsOwned.title }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0];
+        if (status === "approved") {
+          const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason: request.reason }).where(and(eq(proxyBids.id, request.bidId), eq(proxyBids.status, "active")));
+          if (cancelled[0]?.affectedRows === 0) throw new Error("BID_NO_LONGER_ACTIVE");
+        }
+        const updated = await tx.update(bidCancellationRequests).set({ status }).where(and(eq(bidCancellationRequests.id, request.id), eq(bidCancellationRequests.status, "pending")));
+        if (updated[0]?.affectedRows === 0) throw new Error("REQUEST_ALREADY_DECIDED");
+        return { request, listingTitle: listing?.title ?? request.listingId };
+      });
+      await createNotification(result.request.userId, "system", `Bid cancellation ${status}`, `Your bid cancellation request for “${result.listingTitle}” was ${status}.`, result.request.listingId);
+      if (status === "approved") publishAuctionUpdate(result.request.listingId);
+      return res.json({ ok: true, status });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === "REQUEST_NOT_FOUND") return res.status(404).json({ ok: false, error: "Cancellation request not found." });
+      if (code === "REQUEST_ALREADY_DECIDED") return res.status(409).json({ ok: false, error: "This cancellation request was already decided." });
+      if (code === "BID_NO_LONGER_ACTIVE") return res.status(409).json({ ok: false, error: "This bid is no longer active, so it cannot be cancelled from this request." });
+      throw error;
+    }
+  });
   app.get("/api/bids/second-chance/offers", async (req, res) => {
     const user = await requireUser(req, res); if (!user) return;
     await settleExpiredAuctions();

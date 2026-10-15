@@ -801,3 +801,21 @@ kbd { font-family: inherit; font-size: 9px; color: #abb2af; border: 1px solid #e
     justify-content: flex-end;
   }
 }
+
+
+/* Demo-only payment ledger and live bid-cancellation review */
+.demo-payments-hero { border-color: #cfe6df; background: linear-gradient(125deg, #f1faf7 55%, #fff8ee); }
+.demo-payments-hero .payments-hero-mark { color: #176b5c; }
+.demo-payments-hero p { max-width: 720px; }
+.bid-cancellation-admin-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.bid-cancellation-admin-row:last-child { border-bottom: 0; }
+.bid-cancellation-admin-detail { display: grid; gap: 4px; min-width: 0; }
+.bid-cancellation-admin-detail > strong { color: var(--ink); font-size: 13px; }
+.bid-cancellation-admin-detail > span, .bid-cancellation-admin-detail > small { color: var(--muted-dark); font-size: 11px; }
+.bid-cancellation-admin-detail > p { margin: 2px 0; color: #a25445; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.bid-cancellation-admin-actions { display: flex; gap: 7px; }
+@media (max-width: 700px) {
+  .bid-cancellation-admin-row { grid-template-columns: 30px minmax(0, 1fr); align-items: start; }
+  .bid-cancellation-admin-row > .status-badge, .bid-cancellation-admin-actions { grid-column: 2; justify-self: start; }
+  .payment-history-row { grid-template-columns: 32px minmax(0, 1fr); }
+}

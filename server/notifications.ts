@@ -2,10 +2,11 @@ import type { Express, Request, Response } from "express";
 import { and, desc, eq, gte, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { getAppUser } from "./appAuth";
-import { commerceOrders, listingSizeVariants, listingsOwned, notifications, proxyBids, users } from "../drizzle/schema";
+import { commerceOrders, listingSizeVariants, listingsOwned, notifications, paymentOrders, proxyBids, users } from "../drizzle/schema";
 import { acceptanceExpiryTransition, resolveExpiredAuctionOutcome, selectSecondChanceBid } from "./auctionState";
 import { publishAuctionUpdate } from "./auctionEvents";
 import { calculateAutoAuctionCharge } from "./auctionWallet";
+import { demoPaymentStatus } from "./demoPaymentState";
 
 export async function createNotification(recipientId: number, type: "auction_won" | "delivery_update" | "order_created" | "system", title: string, message: string, entityId?: string) {
   const db = await getDb();
@@ -36,6 +37,7 @@ async function expireAcceptanceWindows(db: NonNullable<Awaited<ReturnType<typeof
       if (order && order.status === "Processing") {
         expiredOrderId = order.orderId;
         await tx.update(commerceOrders).set({ status: "Cancelled" }).where(eq(commerceOrders.id, order.id));
+        await tx.update(paymentOrders).set({ status: "cancelled" }).where(eq(paymentOrders.orderId, order.orderId));
         if (order.payment === "E-wallet" && order.amountCents > 0) await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${order.amountCents}` }).where(eq(users.id, expiring.userId));
       }
       const rows = await tx.select().from(proxyBids).where(eq(proxyBids.listingId, listing.listingId)).orderBy(desc(proxyBids.createdAt));
@@ -141,6 +143,8 @@ export async function settleExpiredAuctions() {
             destinationLongitude: winnerRow!.shippingLongitude,
             status: "Processing",
           });
+          const buyer = (await tx.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, candidateWinner.userId)).limit(1))[0];
+          await tx.insert(paymentOrders).values({ orderId: automaticOrderId, paymentMethod: "demo_wallet", stripeCheckoutSessionId: null, stripePaymentIntentId: null, currency: "PHP", amountMinor: amountCents, customerEmail: String(buyer?.email ?? "").slice(0, 320), customerName: String(buyer?.name || buyer?.email || "Buyer").slice(0, 120), itemTitle: listing.title.slice(0, 160), status: demoPaymentStatus("demo_wallet", "Processing") });
         }
       }
 

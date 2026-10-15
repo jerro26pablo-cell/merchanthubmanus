@@ -8,6 +8,7 @@ import { buildProxyBidLadderEvents, calculateProxyWinningBidCents, createBidderL
 import { publishAuctionUpdate, subscribeAuctionUpdates } from "./auctionEvents";
 import { calculateAuctionHoldChange, getSpendableWalletCents } from "./auctionWallet";
 import { demoPaymentStatus } from "./demoPaymentState";
+import { isListingOwner, resolveCancellationTransition } from "./bidCancellationWorkflow";
 
 const requireUser = async (req: Request, res: Response) => {
   const user = await getAppUser(req);
@@ -35,6 +36,9 @@ export async function getBidHistoryForUser(userId: number) {
   if (!db) return [];
   await settleExpiredAuctions();
   const rows = await db.select().from(proxyBids).where(eq(proxyBids.userId, userId)).orderBy(desc(proxyBids.createdAt), desc(proxyBids.id)).limit(100);
+  const cancellationRows = await db.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.userId, userId));
+  cancellationRows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || b.id - a.id);
+  const cancellationByBidId = new Map(cancellationRows.map((request) => [request.bidId, request]));
   const listingRows = await db.select().from(listingsOwned);
   const listingMap = new Map(listingRows.map((listing) => [listing.listingId, listing]));
   const orders = await db.select({ auctionBidId: commerceOrders.auctionBidId, orderId: commerceOrders.orderId, status: commerceOrders.status }).from(commerceOrders).where(eq(commerceOrders.buyerId, userId));
@@ -43,7 +47,8 @@ export async function getBidHistoryForUser(userId: number) {
     const listing = listingMap.get(row.listingId);
     const state = listing ? auctionStatus(row, listing) : { auctionState: "Auction ended", bidderStatus: "Lost" };
     const order = orderMap.get(row.id);
-    return { ...row, orderId: order?.orderId ?? null, orderStatus: order?.status ?? null, winnerCancellationAllowed: listing ? Boolean(listing.winnerCancellationAllowed) : true, listingTitle: listing?.title ?? row.listingId, listingType: listing?.listingType ?? "Auction", auctionStartAt: listing?.auctionStartAt?.toISOString() ?? null, auctionEndAt: listing?.auctionEndAt?.toISOString() ?? null, ...state };
+    const cancellationRequest = cancellationByBidId.get(row.id);
+    return { ...row, orderId: order?.orderId ?? null, orderStatus: order?.status ?? null, cancellationRequestStatus: cancellationRequest?.status ?? null, cancellationRequestReason: cancellationRequest?.reason ?? null, winnerCancellationAllowed: listing ? Boolean(listing.winnerCancellationAllowed) : true, listingTitle: listing?.title ?? row.listingId, listingType: listing?.listingType ?? "Auction", auctionStartAt: listing?.auctionStartAt?.toISOString() ?? null, auctionEndAt: listing?.auctionEndAt?.toISOString() ?? null, ...state };
   });
 }
 
@@ -370,24 +375,26 @@ export function registerBiddingRoutes(app: Express) {
   app.get("/api/bids/cancellation-requests", async (req, res) => {
     const user = await requireUser(req, res);
     if (!user) return;
-    if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can manage live bid cancellation requests." });
     const db = await getDb();
     if (!db) return res.status(503).json({ ok: false, error: "Database is not available yet." });
+    const isAdmin = user.role === "admin" && user.email.toLowerCase() === "admin@gmail.com";
     const rows = await db.select().from(bidCancellationRequests).orderBy(desc(bidCancellationRequests.createdAt));
-    const requests = await Promise.all(rows.map(async (request) => {
+    const ownedListings = isAdmin ? [] : await db.select({ listingId: listingsOwned.listingId }).from(listingsOwned).where(eq(listingsOwned.ownerId, user.id));
+    const ownedListingIds = new Set(ownedListings.map((listing) => listing.listingId));
+    const visibleRows = isAdmin ? rows : rows.filter((request) => request.userId === user.id || ownedListingIds.has(request.listingId));
+    const requests = await Promise.all(visibleRows.map(async (request) => {
       const [bid, listing, bidder] = await Promise.all([
         db.select().from(proxyBids).where(eq(proxyBids.id, request.bidId)).limit(1),
-        db.select({ title: listingsOwned.title }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1),
+        db.select({ title: listingsOwned.title, ownerId: listingsOwned.ownerId }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1),
         db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, request.userId)).limit(1),
       ]);
-      return { ...request, listingTitle: listing[0]?.title ?? request.listingId, bidderName: bidder[0]?.name || bidder[0]?.email || `User ${request.userId}`, bidderEmail: bidder[0]?.email ?? "", bidAmountCents: bid[0]?.currentBidCents ?? bid[0]?.maxBidCents ?? null, bidStatus: bid[0]?.status ?? "missing" };
+      return { ...request, listingTitle: listing[0]?.title ?? request.listingId, bidderName: bidder[0]?.name || bidder[0]?.email || `User ${request.userId}`, bidderEmail: bidder[0]?.email ?? "", bidAmountCents: bid[0]?.currentBidCents ?? bid[0]?.maxBidCents ?? null, bidStatus: bid[0]?.status ?? "missing", canDecide: listing[0]?.ownerId === user.id };
     }));
     return res.json({ ok: true, requests });
   });
   app.patch("/api/bids/cancellation-requests/:requestId", async (req, res) => {
     const user = await requireUser(req, res);
     if (!user) return;
-    if (user.role !== "admin" || user.email.toLowerCase() !== "admin@gmail.com") return res.status(403).json({ ok: false, error: "Only the admin account can decide live bid cancellation requests." });
     const status = req.body?.status === "approved" ? "approved" : req.body?.status === "denied" ? "denied" : null;
     if (!status) return res.status(400).json({ ok: false, error: "Status must be approved or denied." });
     const requestId = Number(req.params.requestId);
@@ -398,7 +405,11 @@ export function registerBiddingRoutes(app: Express) {
         const request = (await tx.select().from(bidCancellationRequests).where(eq(bidCancellationRequests.id, requestId)).limit(1))[0];
         if (!request) throw new Error("REQUEST_NOT_FOUND");
         if (request.status !== "pending") throw new Error("REQUEST_ALREADY_DECIDED");
-        const listing = (await tx.select({ title: listingsOwned.title }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0];
+        const listing = (await tx.select({ title: listingsOwned.title, ownerId: listingsOwned.ownerId }).from(listingsOwned).where(eq(listingsOwned.listingId, request.listingId)).limit(1))[0];
+        if (!listing || !isListingOwner(listing.ownerId, user.id)) throw new Error("SELLER_NOT_AUTHORIZED");
+        const bid = (await tx.select({ status: proxyBids.status }).from(proxyBids).where(eq(proxyBids.id, request.bidId)).limit(1))[0];
+        const transition = resolveCancellationTransition(request.status, bid?.status ?? null, status);
+        if ("error" in transition) throw new Error(transition.error);
         if (status === "approved") {
           const cancelled = await tx.update(proxyBids).set({ status: "cancelled", currentBidCents: 0, reservedCents: 0, cancellationReason: request.reason }).where(and(eq(proxyBids.id, request.bidId), eq(proxyBids.status, "active")));
           if (cancelled[0]?.affectedRows === 0) throw new Error("BID_NO_LONGER_ACTIVE");
@@ -415,6 +426,7 @@ export function registerBiddingRoutes(app: Express) {
       if (code === "REQUEST_NOT_FOUND") return res.status(404).json({ ok: false, error: "Cancellation request not found." });
       if (code === "REQUEST_ALREADY_DECIDED") return res.status(409).json({ ok: false, error: "This cancellation request was already decided." });
       if (code === "BID_NO_LONGER_ACTIVE") return res.status(409).json({ ok: false, error: "This bid is no longer active, so it cannot be cancelled from this request." });
+      if (code === "SELLER_NOT_AUTHORIZED") return res.status(403).json({ ok: false, error: "Only the seller who owns this listing can decide its bid cancellation requests." });
       throw error;
     }
   });

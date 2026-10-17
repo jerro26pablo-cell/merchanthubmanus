@@ -25,7 +25,7 @@ const createSvg = (label: ReturnType<typeof labelDto>) => {
   <text x="48" y="254" font-family="Arial,sans-serif" font-size="15" fill="#65706e">Order ${escapeXml(label.orderId)} · ${escapeXml(label.service)}</text>
   <rect x="48" y="282" width="720" height="68" rx="10" fill="#e9f6f2"/>
   <text x="70" y="312" font-family="Arial,sans-serif" font-size="12" fill="#2d9c8b">DEMO TRACKING REFERENCE</text>
-  <text x="70" y="338" font-family="Arial,sans-serif" font-size="23" font-family="monospace" font-weight="700" fill="#182329">${escapeXml(label.tracking)}</text>
+  <text x="70" y="338" font-family="monospace" font-size="23" font-weight="700" fill="#182329">${escapeXml(label.tracking)}</text>
   <text x="48" y="402" font-family="Arial,sans-serif" font-size="13" fill="#65706e">CARRIER (SAMPLE)</text>
   <text x="48" y="434" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#182329">${escapeXml(label.carrier)}</text>
   <text x="330" y="402" font-family="Arial,sans-serif" font-size="13" fill="#65706e">PACKAGE</text>

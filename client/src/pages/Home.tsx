@@ -136,7 +136,7 @@ const navGroups = [
   {
     label: "Control room",
     items: [
-      { id: "admin" as Section, label: "Reports & moderation", icon: ShieldCheck },
+      { id: "admin" as Section, label: "Reports", icon: ShieldCheck },
       { id: "rider" as Section, label: "Rider desk", icon: MapPinned },
       { id: "seller-applications" as Section, label: "Seller applications", icon: ClipboardCheck },
       { id: "manage-users" as Section, label: "Manage users", icon: Users },

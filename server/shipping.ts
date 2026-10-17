@@ -9,10 +9,6 @@ type LabelRow = typeof shippingLabels.$inferSelect;
 const escapeXml = (value: string) => value.replace(/[<>&'\"]/g, (character) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", "\"": "&quot;" }[character] ?? character));
 const labelDto = (row: LabelRow) => ({ ...row, weightKg: row.weightGrams / 1000, createdAt: row.createdAt.toISOString(), labelUrl: `/api/shipping/labels/${encodeURIComponent(row.labelId)}` });
 const createSvg = (label: ReturnType<typeof labelDto>) => {
-  const barcode = label.tracking.split("").map((character, index) => {
-    const width = character.charCodeAt(0) % 3 === 0 ? 4 : character.charCodeAt(0) % 2 === 0 ? 2 : 1;
-    return `<rect x="${24 + index * 7}" y="174" width="${width}" height="54" fill="#182329"/>`;
-  }).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="816" height="1056" viewBox="0 0 816 1056">
   <rect width="816" height="1056" fill="#fffefb"/>
@@ -31,7 +27,6 @@ const createSvg = (label: ReturnType<typeof labelDto>) => {
   <text x="330" y="402" font-family="Arial,sans-serif" font-size="13" fill="#65706e">PACKAGE</text>
   <text x="330" y="434" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#182329">${escapeXml(label.packageType)} · ${label.weightKg.toFixed(1)} kg</text>
   <rect x="48" y="480" width="720" height="280" fill="#fff" stroke="#e8e4da"/>
-  ${barcode}
   <text x="408" y="786" text-anchor="middle" font-family="monospace" font-size="22" letter-spacing="5" fill="#182329">${escapeXml(label.tracking)}</text>
   <line x1="48" y1="842" x2="768" y2="842" stroke="#e8e4da" stroke-width="2"/>
   <text x="48" y="884" font-family="Arial,sans-serif" font-size="13" fill="#65706e">GENERATED</text>

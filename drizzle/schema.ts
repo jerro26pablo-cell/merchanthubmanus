@@ -248,6 +248,28 @@ export const bidCancellationRequests = mysqlTable("bid_cancellation_requests", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
+export const marketplaceRatings = mysqlTable("marketplace_ratings", {
+  id: int("id").autoincrement().primaryKey(),
+  orderId: varchar("orderId", { length: 64 }).notNull(),
+  listingId: varchar("listingId", { length: 128 }).notNull(),
+  buyerId: int("buyerId").notNull(),
+  sellerId: int("sellerId").notNull(),
+  target: mysqlEnum("target", ["item", "seller"]).notNull(),
+  rating: int("rating").notNull(),
+  comment: varchar("comment", { length: 500 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => ({ uniqueBuyerOrderTarget: uniqueIndex("marketplace_ratings_buyer_order_target_unique").on(table.buyerId, table.orderId, table.target), ratingListingIndex: index("marketplace_ratings_listing_idx").on(table.listingId), ratingSellerIndex: index("marketplace_ratings_seller_idx").on(table.sellerId) }));
+export const sellerReports = mysqlTable("seller_reports", {
+  id: int("id").autoincrement().primaryKey(),
+  sellerId: int("sellerId").notNull(),
+  reporterId: int("reporterId").notNull(),
+  listingId: varchar("listingId", { length: 128 }),
+  reason: varchar("reason", { length: 160 }).notNull(),
+  details: varchar("details", { length: 1000 }),
+  status: mysqlEnum("status", ["open", "reviewed", "dismissed"]).default("open").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
 
 export type PaymentOrder = typeof paymentOrders.$inferSelect;
 export type ShippingLabel = typeof shippingLabels.$inferSelect;

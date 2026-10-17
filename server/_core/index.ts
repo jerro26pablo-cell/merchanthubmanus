@@ -17,6 +17,7 @@ import { registerNotificationRoutes, startAuctionSettlementLoop } from "../notif
 import { registerMessageRoutes } from "../messages";
 import { registerSavedSearchRoutes } from "../savedSearches";
 import { registerStoreRoutes } from "../stores";
+import { registerTrustRoutes } from "../trust";
 
 async function startServer() {
   const app = express();
@@ -40,6 +41,7 @@ async function startServer() {
   registerMessageRoutes(app);
   registerSavedSearchRoutes(app);
   registerStoreRoutes(app);
+  registerTrustRoutes(app);
   registerOAuthRoutes(app);
   // tRPC API
   app.use(

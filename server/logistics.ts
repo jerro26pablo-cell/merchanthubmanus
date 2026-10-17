@@ -112,11 +112,21 @@ export const registerLogisticsRoutes = (app: Express) => {
     const current = (await db.select().from(commerceOrders).where(eq(commerceOrders.orderId, req.params.orderId)).limit(1))[0];
     if (!current) return res.status(404).json({ ok: false, error: "Order not found." });
     if (current.riderId !== user.id || current.status !== "Rider assigned") return res.status(409).json({ ok: false, error: "Pickup can only be cancelled by its assigned rider before the item is picked up." });
-    const released = await db.update(commerceOrders).set({ riderId: null, status: "Processing" }).where(and(eq(commerceOrders.orderId, current.orderId), eq(commerceOrders.riderId, user.id), eq(commerceOrders.status, "Rider assigned")));
-    if (released[0]?.affectedRows === 0) return res.status(409).json({ ok: false, error: "This pickup assignment already changed. Refresh the queue." });
-    await createNotification(current.buyerId, "delivery_update", "Rider cancelled pickup", `The rider could not pick up order ${current.orderId}. Your order is back in the queue for another rider.`, current.orderId);
-    await createNotification(current.sellerId, "delivery_update", "Pickup released to rider queue", `The assigned rider cancelled pickup for order ${current.orderId}; another rider can accept it.`, current.orderId);
-    return res.json({ ok: true, orderId: current.orderId, status: "Processing" });
+    const result = await db.transaction(async (tx) => {
+      const cancelled = await tx.update(commerceOrders).set({ riderId: null, status: "Cancelled" }).where(and(eq(commerceOrders.orderId, current.orderId), eq(commerceOrders.riderId, user.id), eq(commerceOrders.status, "Rider assigned")));
+      if (cancelled[0]?.affectedRows === 0) return { error: "This pickup assignment already changed. Refresh the queue." };
+      await tx.update(listingsOwned).set({ stock: sql`${listingsOwned.stock} + ${current.quantity}` }).where(eq(listingsOwned.listingId, current.listingId));
+      await tx.update(paymentOrders).set({ status: "cancelled" }).where(eq(paymentOrders.orderId, current.orderId));
+      if (current.payment === "E-wallet") {
+        await tx.update(users).set({ walletCents: sql`${users.walletCents} + ${current.amountCents}` }).where(eq(users.id, current.buyerId));
+        await recordDemoStripeEvent(tx, "payment_intent.refunded");
+      }
+      return { ok: true };
+    });
+    if ("error" in result) return res.status(409).json({ ok: false, error: result.error });
+    await createNotification(current.buyerId, "delivery_update", "Order cancelled and refunded", `The rider cancelled pickup for order ${current.orderId}. Your demo-wallet payment was refunded.`, current.orderId);
+    await createNotification(current.sellerId, "delivery_update", "Rider cancelled pickup", `The rider cancelled pickup for order ${current.orderId}; the order was cancelled and inventory was restored.`, current.orderId);
+    return res.json({ ok: true, orderId: current.orderId, status: "Cancelled", refunded: current.payment === "E-wallet" });
   });
   app.post("/api/orders/:orderId/status", async (req, res) => {
     const user = await auth(req, res); if (!user) return;
